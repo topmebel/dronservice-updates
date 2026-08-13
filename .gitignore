@@ -1,0 +1,5 @@
+/DronService
+/dronservice-linux-arm64
+/checksums.sha256
+/*.sig
+/release/

@@ -1,0 +1,4 @@
+# Public GitHub repository that contains signed DronService Releases.
+# Example: company/dronservice-updates
+DRONSERVICE_UPDATE_REPOSITORY=owner/repository
+DRONSERVICE_UPDATE_PUBLIC_KEY=/usr/local/etc/dronservice-release.pub

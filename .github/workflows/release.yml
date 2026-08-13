@@ -1,0 +1,77 @@
+name: Release DronService
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: |
+          printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          gofmt_output="$(gofmt -d .)"
+          test -z "$gofmt_output"
+          go vet ./...
+          go test ./...
+          go test -race ./...
+
+      - name: Build Linux ARM64
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath -ldflags "-s -w \
+            -X DronService/internal/buildinfo.Version=${GITHUB_REF_NAME} \
+            -X DronService/internal/buildinfo.Commit=${GITHUB_SHA} \
+            -X DronService/internal/buildinfo.BuiltAt=${built_at}" \
+            -o dronservice-linux-arm64 .
+          sha256sum dronservice-linux-arm64 > checksums.sha256
+
+      - name: Sign binary
+        env:
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$RELEASE_SIGNING_PRIVATE_KEY"
+          key_file="${RUNNER_TEMP}/dronservice-release-private.pem"
+          printf '%s' "$RELEASE_SIGNING_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          openssl dgst -sha256 -sign "$key_file" \
+            -out dronservice-linux-arm64.sig dronservice-linux-arm64
+
+      - name: Attest binary provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dronservice-linux-arm64
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dronservice-linux-arm64 \
+            checksums.sha256 \
+            dronservice-linux-arm64.sig \
+            deploy/install-dronservice.sh \
+            deploy/update-dronservice.sh \
+            deploy/dronservice.service \
+            deploy/dronservice-update.service \
+            deploy/dronservice-update.path \
+            deploy/dronservice-release.pub \
+            --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

@@ -1,0 +1,8 @@
+logLevel: info
+api: yes
+apiAddress: 127.0.0.1:9997
+rtsp: yes
+rtspAddress: :554
+moq: no
+paths:
+  all_others:

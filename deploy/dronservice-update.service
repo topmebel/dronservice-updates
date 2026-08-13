@@ -1,0 +1,18 @@
+[Unit]
+Description=Install a manually approved DronService release
+After=network-online.target dronservice.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/dronservice/update-dronservice.request
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/dronservice/update.conf
+ExecStart=/usr/local/libexec/dronservice-update
+UMask=0022
+RuntimeDirectory=dronservice-update
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/usr/local/lib/dronservice /usr/local/bin /var/lib/dronservice /run/dronservice-update

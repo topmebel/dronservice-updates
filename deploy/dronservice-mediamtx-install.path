@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for DronService MediaMTX installation requests
+
+[Path]
+PathExists=/var/lib/dronservice/install-mediamtx.request
+Unit=dronservice-mediamtx-install.service
+
+[Install]
+WantedBy=multi-user.target
