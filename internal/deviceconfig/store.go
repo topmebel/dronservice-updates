@@ -69,7 +69,33 @@ func (s *Store) Save(config Config) error {
 		next[id] = existing
 	}
 	next[config.DeviceID] = config
+	if err := s.write(next); err != nil {
+		return err
+	}
+	s.configs = next
+	return nil
+}
 
+func (s *Store) Delete(deviceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.configs[deviceID]; !ok {
+		return os.ErrNotExist
+	}
+	next := make(map[string]Config, len(s.configs)-1)
+	for id, existing := range s.configs {
+		if id != deviceID {
+			next[id] = existing
+		}
+	}
+	if err := s.write(next); err != nil {
+		return err
+	}
+	s.configs = next
+	return nil
+}
+
+func (s *Store) write(next map[string]Config) error {
 	data, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode device configurations: %w", err)
@@ -111,6 +137,5 @@ func (s *Store) Save(config Config) error {
 		return fmt.Errorf("close device configuration directory: %w", err)
 	}
 
-	s.configs = next
 	return nil
 }

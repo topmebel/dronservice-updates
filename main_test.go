@@ -143,6 +143,20 @@ func TestIPCamerasHeadingPlacesDiscoveryButtonOnTheRight(t *testing.T) {
 	}
 }
 
+func TestCameraTablesProvideDeleteActions(t *testing.T) {
+	for name, page := range map[string]string{"analog": devicesPageHTML, "ip": ipCamerasPageHTML} {
+		if !strings.Contains(page, "Удалить") || (!strings.Contains(page, "method:'DELETE'") && !strings.Contains(page, "method: 'DELETE'")) {
+			t.Errorf("%s camera table does not provide a DELETE action", name)
+		}
+	}
+	if !strings.Contains(devicesPageHTML, `/api/video-devices/config/`) {
+		t.Error("analog camera table does not call the delete endpoint")
+	}
+	if !strings.Contains(ipCamerasPageHTML, `/api/ip-cameras/`) || !strings.Contains(ipCamerasPageHTML, `data-delete-ip-camera`) {
+		t.Error("IP camera table does not call the delete endpoint")
+	}
+}
+
 func TestIPCamerasPageSupportsDahuaInitializationAndNetworkSettings(t *testing.T) {
 	for _, fragment := range []string{
 		`<th>Инициализация</th>`,
@@ -523,9 +537,9 @@ func TestAnalogCameraTableShowsConfiguredCaptureInSecondRow(t *testing.T) {
 	})
 
 	for _, fragment := range []string{
-		`<tr class="camera-row" data-device-path="/dev/video2"`,
+		`<tr class="camera-row" data-device-id="usb-camera" data-device-path="/dev/video2"`,
 		`<tr class="stream-details-row" data-stream-details="usb-camera">`,
-		`<td colspan="7"><div class="stream-details">`,
+		`<td colspan="8"><div class="stream-details">`,
 		`<strong>Захват:</strong><span data-device-stream>YUYV · 720x576 · 25 FPS</span>`,
 		`data-device-preview="usb-camera"`,
 		`>Просмотр ▶</button>`,

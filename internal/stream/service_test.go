@@ -4,11 +4,42 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"DronService/internal/mediamtx"
 )
+
+func TestApplySourceEditsOnlyManagedConfigFilePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mediamtx.yml")
+	header := "# custom MediaMTX header\nlogLevel: debug\npaths:\n"
+	if err := os.WriteFile(path, []byte(header+"  all_others:\n"), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	apiCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		apiCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	service := NewService(mediamtx.NewClient(server.URL, "", ""), mediamtx.NewConfigFile(path))
+	if err := service.ApplySource(context.Background(), Config{Name: "front"}, Source{Type: "ip", Input: "rtsp://192.168.1.20/main"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(path)
+	if apiCalled || !strings.HasPrefix(string(content), header) || !strings.Contains(string(content), "  front:\n") {
+		t.Fatalf("apiCalled=%v config=\n%s", apiCalled, content)
+	}
+	if err := service.DeleteConfig(context.Background(), "front"); err != nil {
+		t.Fatal(err)
+	}
+	content, _ = os.ReadFile(path)
+	if string(content) != header+"  all_others:\n" {
+		t.Fatalf("delete changed unrelated configuration:\n%s", content)
+	}
+}
 
 const testInternalPreviewPath = InternalPreviewPathPrefix + "0123456789abcdef01234567"
 

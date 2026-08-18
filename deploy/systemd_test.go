@@ -89,6 +89,25 @@ func TestMediaMTXDeploymentEnablesHLSPreview(t *testing.T) {
 	}
 }
 
+func TestMediaMTXConfigurationIsEditableByDronService(t *testing.T) {
+	units := readDeploymentFile(t, "mediamtx.service") + readDeploymentFile(t, "dronservice.service")
+	for _, fragment := range []string{
+		"/usr/local/etc/mediamtx/mediamtx.yml",
+		"MEDIAMTX_CONFIG_PATH=/usr/local/etc/mediamtx/mediamtx.yml",
+		"ReadWritePaths=/var/lib/dronservice /usr/local/etc/mediamtx",
+	} {
+		if !strings.Contains(units, fragment) {
+			t.Errorf("systemd configuration does not contain %q", fragment)
+		}
+	}
+	installer := readDeploymentFile(t, "install-mediamtx.sh")
+	for _, fragment := range []string{"chown admin:admin", "chmod 0660", "/usr/local/etc/mediamtx.yml"} {
+		if !strings.Contains(installer, fragment) {
+			t.Errorf("MediaMTX installer does not contain migration fragment %q", fragment)
+		}
+	}
+}
+
 func TestAnalogVideoRuntimeHasExplicitProvisioningScript(t *testing.T) {
 	script := readDeploymentFile(t, "install-video-runtime.sh")
 	for _, fragment := range []string{

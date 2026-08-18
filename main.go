@@ -57,7 +57,12 @@ func main() {
 		os.Getenv("MEDIAMTX_USER"),
 		os.Getenv("MEDIAMTX_PASSWORD"),
 	)
-	streamService := stream.NewService(mediaMTXClient)
+	mediaMTXConfigPath := strings.TrimSpace(os.Getenv("MEDIAMTX_CONFIG_PATH"))
+	if mediaMTXConfigPath == "" {
+		mediaMTXConfigPath = defaultMediaMTXConfigPath()
+	}
+	mediaMTXConfigFile := mediamtx.NewConfigFile(mediaMTXConfigPath)
+	streamService := stream.NewService(mediaMTXClient, mediaMTXConfigFile)
 	deviceScanner := v4l2.NewScanner()
 	dataDir := os.Getenv("DRONSERVICE_DATA_DIR")
 	if dataDir == "" {
@@ -156,7 +161,9 @@ func main() {
 	mux.HandleFunc("GET /api/streams", streamsHandler(streamService))
 	mux.HandleFunc("/api/stream-configs", streamConfigsHandler(streamService, streamSources, publicRTSPBase))
 	mux.HandleFunc("/api/mediamtx/install", mediaMTXInstallHandler(mediaMTXInstaller))
+	mux.HandleFunc("/api/mediamtx/config-file", mediaMTXConfigFileHandler(mediaMTXConfigFile))
 	mux.HandleFunc("/api/ip-cameras", ipCamerasHandler(ipCameraService))
+	mux.HandleFunc("DELETE /api/ip-cameras/{cameraID}", deleteIPCameraHandler(ipCameraService))
 	mux.HandleFunc("POST /api/ip-cameras/discover", ipCameraDiscoveryHandler(ipCameraService))
 	mux.HandleFunc("POST /api/ip-cameras/status", ipCameraStatusHandler(ipCameraService))
 	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/video-streams", ipCameraVideoStreamsHandler(ipCameraService))
@@ -169,6 +176,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/zerotier/networks/{networkID}", zeroTierLeaveHandler(zeroTierClient))
 	mux.HandleFunc("GET /api/video-devices", videoDevicesHandler(deviceScanner, deviceStore))
 	mux.HandleFunc("POST /api/video-devices/config", saveVideoDeviceHandler(deviceScanner, deviceStore))
+	mux.HandleFunc("DELETE /api/video-devices/config/{deviceID}", deleteVideoDeviceConfigHandler(deviceStore))
 	mux.HandleFunc("POST /api/video-devices/{deviceID}/preview", analogPreviewStartHandler(streamSources, streamPreviewManager, publicHLSBase))
 	mux.HandleFunc("DELETE /api/video-devices/{deviceID}/preview/{sessionID}", analogPreviewStopHandler(streamPreviewManager))
 	mux.Handle("GET /devices", devicesPage)
@@ -225,6 +233,19 @@ func main() {
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		<-shutdownDone
 	}
+}
+
+func defaultMediaMTXConfigPath() string {
+	const currentPath = "/usr/local/etc/mediamtx/mediamtx.yml"
+	const legacyPath = "/usr/local/etc/mediamtx.yml"
+
+	if _, err := os.Stat(currentPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return currentPath
+	}
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath
+	}
+	return currentPath
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
@@ -339,6 +360,21 @@ func saveVideoDeviceHandler(scanner *v4l2.Scanner, store *deviceconfig.Store) ht
 	}
 }
 
+func deleteVideoDeviceConfigHandler(store *deviceconfig.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := store.Delete(r.PathValue("deviceID")); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "Настройки камеры не найдены"})
+				return
+			}
+			log.Printf("delete video device configuration: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось удалить настройки камеры"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func validDeviceConfig(devices []v4l2.Device, config deviceconfig.Config) bool {
 	for _, device := range devices {
 		if device.ID != config.DeviceID || device.Path != config.DevicePath {
@@ -409,17 +445,17 @@ const devicesPageHTML = `<!doctype html>
   <h1>Список аналоговых камер</h1>
   {{if .Devices}}
   <div class="table-wrap"><table>
-    <thead><tr><th>Порт</th><th>Устройство</th><th class="toggle-cell">MediaMTX</th><th>Драйвер</th><th>Шина</th><th>Версия</th><th>Возможности</th></tr></thead>
+    <thead><tr><th>Порт</th><th>Устройство</th><th class="toggle-cell">MediaMTX</th><th>Драйвер</th><th>Шина</th><th>Версия</th><th>Возможности</th><th>Действия</th></tr></thead>
     <tbody id="devices-body">
     {{range .Devices}}
-      <tr class="camera-row" data-device-path="{{.Path}}" title="Двойной клик для выбора режима">
+      <tr class="camera-row" data-device-id="{{.ID}}" data-device-path="{{.Path}}" title="Двойной клик для выбора режима">
         <td><code>{{.Path}}</code></td>
         <td>{{if .ConfiguredName}}<strong>{{.ConfiguredName}}</strong><br>{{end}}{{if .Card}}{{.Card}}{{else}}{{.Name}}{{end}}{{if .Error}}<br><span class="error">{{.Error}}</span>{{end}}</td><td class="toggle-cell"><button type="button" class="toggle device-use-toggle" role="switch" aria-checked="{{if .Use}}true{{else}}false{{end}}" aria-readonly="true" title="Состояние использования в MediaMTX"></button></td>
         <td>{{.Driver}}</td><td>{{.Bus}}</td><td>{{.Version}}</td>
-        <td>{{range $index, $value := .Capabilities}}{{if $index}}, {{end}}{{$value}}{{end}}</td>
+        <td>{{range $index, $value := .Capabilities}}{{if $index}}, {{end}}{{$value}}{{end}}</td><td>{{if .ConfiguredName}}<button type="button" data-delete-device="{{.ID}}" style="padding:6px 9px;background:#991b1b;color:#fff" aria-label="Удалить настройки камеры {{.ConfiguredName}}">Удалить</button>{{else}}—{{end}}</td>
       </tr>
       <tr class="stream-details-row" data-stream-details="{{.ID}}">
-        <td colspan="7"><div class="stream-details"><span class="stream-detail"><strong>Захват:</strong><span data-device-stream>{{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{.SelectedFormat}} · {{.SelectedResolution}} · {{.SelectedFPS}} FPS{{else}}Режим не настроен{{end}}</span><button type="button" class="camera-link preview-button" data-device-preview="{{.ID}}" aria-label="Открыть предпросмотр аналоговой камеры {{if .ConfiguredName}}{{.ConfiguredName}}{{else}}{{.Path}}{{end}}" {{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{else}}disabled title="Сначала выберите формат, разрешение и FPS"{{end}}>Просмотр ▶</button></span></div></td>
+        <td colspan="8"><div class="stream-details"><span class="stream-detail"><strong>Захват:</strong><span data-device-stream>{{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{.SelectedFormat}} · {{.SelectedResolution}} · {{.SelectedFPS}} FPS{{else}}Режим не настроен{{end}}</span><button type="button" class="camera-link preview-button" data-device-preview="{{.ID}}" aria-label="Открыть предпросмотр аналоговой камеры {{if .ConfiguredName}}{{.ConfiguredName}}{{else}}{{.Path}}{{end}}" {{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{else}}disabled title="Сначала выберите формат, разрешение и FPS"{{end}}>Просмотр ▶</button></span></div></td>
       </tr>
     {{end}}
     </tbody>
@@ -575,8 +611,22 @@ const devicesPageHTML = `<!doctype html>
     }
 
     const devicesBody=document.querySelector('#devices-body');devicesBody?.addEventListener('dblclick',event=>{if(event.target.closest('button'))return;const row=event.target.closest('tr[data-device-path]');if(row)openModes(row.dataset.devicePath).catch(error=>window.alert(error.message))});
-    devicesBody?.addEventListener('click', event => {
-      const button = event.target.closest('[data-device-preview]');
+    devicesBody?.addEventListener('click', async event => {
+      const deleteButton = event.target.closest('[data-delete-device]');
+      if (deleteButton) {
+        if (!confirm('Удалить сохранённые настройки этой камеры?')) return;
+        deleteButton.disabled = true;
+        const response = await fetch('/api/video-devices/config/' + encodeURIComponent(deleteButton.dataset.deleteDevice), {method: 'DELETE'});
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          window.alert(result.error || 'Не удалось удалить настройки камеры');
+          deleteButton.disabled = false;
+          return;
+        }
+        window.location.reload();
+        return;
+      }
+	  const button = event.target.closest('[data-device-preview]');
       if (button && !button.disabled) void openAnalogPreview(button);
     });
     formatSelect.addEventListener('change', fillModes);

@@ -110,6 +110,22 @@ func (s *Service) ApplySource(ctx context.Context, config Config, source Source,
 	if err != nil {
 		return err
 	}
+	if s.configFile != nil && !IsInternalPreviewPath(config.Name) {
+		if err := s.configFile.SetPath(config.Name, pathUpdate); err != nil {
+			return fmt.Errorf("write stream path configuration: %w", err)
+		}
+		if existingName != "" && existingName != config.Name {
+			if !streamNamePattern.MatchString(existingName) {
+				_ = s.configFile.DeletePath(config.Name)
+				return fmt.Errorf("invalid existing stream name")
+			}
+			if err := s.configFile.DeletePath(existingName); err != nil {
+				_ = s.configFile.DeletePath(config.Name)
+				return fmt.Errorf("delete previous stream path configuration: %w", err)
+			}
+		}
+		return nil
+	}
 	if existingName == "" {
 		return s.mediaMTX.AddConfigPath(ctx, config.Name, pathUpdate)
 	}
@@ -199,6 +215,9 @@ func (s *Service) UpdateConfig(ctx context.Context, config Config) error {
 }
 
 func (s *Service) DeleteConfig(ctx context.Context, name string) error {
+	if s.configFile != nil && !IsInternalPreviewPath(name) {
+		return s.configFile.DeletePath(name)
+	}
 	err := s.mediaMTX.DeleteConfigPath(ctx, name)
 	if IsInternalPreviewPath(name) && mediamtx.IsHTTPStatus(err, 404) {
 		return nil
@@ -221,11 +240,16 @@ func hasURLCredentials(source string) bool {
 }
 
 type Service struct {
-	mediaMTX *mediamtx.Client
+	mediaMTX   *mediamtx.Client
+	configFile *mediamtx.ConfigFile
 }
 
-func NewService(mediaMTX *mediamtx.Client) *Service {
-	return &Service{mediaMTX: mediaMTX}
+func NewService(mediaMTX *mediamtx.Client, configFile ...*mediamtx.ConfigFile) *Service {
+	service := &Service{mediaMTX: mediaMTX}
+	if len(configFile) > 0 {
+		service.configFile = configFile[0]
+	}
+	return service
 }
 
 func (s *Service) List(ctx context.Context) ([]Stream, error) {

@@ -20,7 +20,12 @@ func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Man
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Камера не найдена"})
 			return
 		}
-		result, err := proxies.Start(cameraproxy.Target{ID: camera.ID, Address: camera.Address, HTTPPort: camera.HTTPPort})
+		result, err := proxies.Start(cameraproxy.Target{
+			ID:            camera.ID,
+			Address:       camera.Address,
+			ClientAddress: requestClientAddress(r.RemoteAddr),
+			HTTPPort:      camera.HTTPPort,
+		})
 		if err != nil {
 			if errors.Is(err, cameraproxy.ErrInvalidTarget) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "У камеры некорректный адрес для web-доступа"})
@@ -49,6 +54,14 @@ func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Man
 		proxyURL := (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port), Path: "/"}).String()
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "proxy", "url": proxyURL, "expiresAt": result.ExpiresAt})
 	}
+}
+
+func requestClientAddress(remoteAddress string) string {
+	host, _, err := net.SplitHostPort(remoteAddress)
+	if err == nil {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(remoteAddress, "[]")
 }
 
 func findCamera(cameras []ipcamera.Camera, id string) (ipcamera.Camera, bool) {

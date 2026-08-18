@@ -21,9 +21,10 @@ var (
 )
 
 type Target struct {
-	ID       string
-	Address  string
-	HTTPPort uint16
+	ID            string
+	Address       string
+	ClientAddress string
+	HTTPPort      uint16
 }
 
 type Result struct {
@@ -82,8 +83,9 @@ func (m *Manager) Start(target Target) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("list local networks: %w", err)
 	}
+	clientIP := net.ParseIP(strings.TrimSpace(target.ClientAddress))
 	for _, network := range networks {
-		if network.Contains(ip) {
+		if clientIP != nil && network.Contains(ip) && network.Contains(clientIP) {
 			return Result{Mode: "direct", DirectURL: targetURL.String() + "/"}, nil
 		}
 	}

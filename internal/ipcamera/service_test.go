@@ -41,6 +41,35 @@ func TestServiceSavePreservesPassword(t *testing.T) {
 	}
 }
 
+func TestServiceDeletePersistsRemoval(t *testing.T) {
+	directory := t.TempDir()
+	service, err := NewService(directory, DahuaDiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := SaveRequest{ID: "camera", Name: "Camera", Address: "192.168.1.20", Manufacturer: "Dahua", MainStreamPath: "rtsp://192.168.1.20/main", SubStreamPath: "rtsp://192.168.1.20/sub"}
+	if err := service.Save(request); err != nil {
+		t.Fatal(err)
+	}
+	service.online[request.ID] = true
+	if err := service.Delete(request.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.List()) != 0 || service.online[request.ID] {
+		t.Fatal("deleted camera remains in service state")
+	}
+	reloaded, err := NewService(directory, DahuaDiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.List()) != 0 {
+		t.Fatal("deleted camera remains on disk")
+	}
+	if err := service.Delete(request.ID); !errors.Is(err, ErrCameraNotFound) {
+		t.Fatalf("second Delete() error = %v, want ErrCameraNotFound", err)
+	}
+}
+
 func TestCameraViewRedactsPasswordAndRTSPCredentials(t *testing.T) {
 	saved := persistedCamera{
 		ID:             "camera",

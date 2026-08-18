@@ -48,6 +48,19 @@ path неизвестные значения показываются как `�
 
 DronService is a Go service for managing MediaMTX, video devices and IP cameras on Linux ARM64 devices such as Raspberry Pi 5.
 
+## MediaMTX configuration
+
+The MediaMTX page contains a manual editor for the active `mediamtx.yml`.
+Manual saves validate YAML and require a top-level `paths` mapping. MediaMTX
+hot-reloads valid file changes.
+
+Persistent camera stream changes are written directly into the matching entry
+under `paths`. DronService preserves the file header, comments, ordering and
+all unrelated path blocks. Temporary preview paths continue to use the Control
+API and are never persisted. The managed configuration path defaults to
+`/usr/local/etc/mediamtx/mediamtx.yml` and can be overridden with
+`MEDIAMTX_CONFIG_PATH`.
+
 ## HTTP access
 
 DronService does not require a login and is intended for a trusted local

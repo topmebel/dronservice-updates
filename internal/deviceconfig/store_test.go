@@ -40,3 +40,31 @@ func TestStorePersistsConfiguration(t *testing.T) {
 		t.Fatalf("devices.json permissions = %o, want 600", permissions)
 	}
 }
+
+func TestStoreDeletePersistsRemoval(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{DeviceID: "camera", Name: "Camera"}
+	if err := store.Save(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(config.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Get(config.DeviceID); ok {
+		t.Fatal("deleted configuration remains in memory")
+	}
+	reloaded, err := NewStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Get(config.DeviceID); ok {
+		t.Fatal("deleted configuration remains on disk")
+	}
+	if err := store.Delete(config.DeviceID); !os.IsNotExist(err) {
+		t.Fatalf("second Delete() error = %v, want os.ErrNotExist", err)
+	}
+}

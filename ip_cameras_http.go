@@ -51,6 +51,21 @@ func ipCamerasHandler(service *ipcamera.Service) http.HandlerFunc {
 	}
 }
 
+func deleteIPCameraHandler(service *ipcamera.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := service.Delete(r.PathValue("cameraID")); err != nil {
+			if errors.Is(err, ipcamera.ErrCameraNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "Камера не найдена"})
+				return
+			}
+			log.Printf("delete IP camera: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось удалить камеру"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func ipCameraDiscoveryHandler(service *ipcamera.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cameras, err := service.Discover(r.Context())
@@ -141,6 +156,10 @@ function openCamera(value){if(value.initializationStatus==='uninitialized'){aler
 addressInput.addEventListener('input',refreshRTSPPaths);
 for(const input of [mainRTSPInput,subRTSPInput])input.addEventListener('change',refreshRTSPPaths);
 const ipBody=document.querySelector('#ip-cameras-body');
+function addIPCameraDeleteActions(){const header=ipBody.closest('table')?.querySelector('thead tr');if(header&&!header.querySelector('[data-actions-header]')){const cell=document.createElement('th');cell.dataset.actionsHeader='';cell.textContent='Действия';header.append(cell)}for(const row of ipBody.querySelectorAll('tr[data-camera]')){if(row.querySelector('[data-delete-ip-camera]'))continue;let value;try{value=JSON.parse(row.dataset.camera)}catch(error){continue}const cell=document.createElement('td'),button=document.createElement('button');button.type='button';button.dataset.deleteIpCamera=value.id;button.textContent='Удалить';button.style.cssText='padding:6px 9px;background:#991b1b;color:#fff';button.setAttribute('aria-label','Удалить камеру '+(value.name||value.address));cell.append(button);row.append(cell);const details=cameraStreamDetailsRow(row,value.id);if(details)details.querySelector('td')?.setAttribute('colspan','8')}}
+addIPCameraDeleteActions();
+new MutationObserver(addIPCameraDeleteActions).observe(ipBody,{childList:true});
+ipBody.addEventListener('click',async event=>{const button=event.target.closest('[data-delete-ip-camera]');if(!button)return;event.stopPropagation();if(!confirm('Удалить эту IP-камеру из списка?'))return;button.disabled=true;const response=await fetch('/api/ip-cameras/'+encodeURIComponent(button.dataset.deleteIpCamera),{method:'DELETE'});if(!response.ok){const result=await response.json().catch(()=>({}));alert(result.error||'Не удалось удалить камеру');button.disabled=false;return}location.reload()});
 ipBody.ondblclick=event=>{if(event.target.closest('.toggle,.camera-link'))return;const row=event.target.closest('tr[data-camera]');if(row)openCamera(JSON.parse(row.dataset.camera))};
 document.querySelector('#close').onclick=()=>dialog.close();
 let pendingPayload;

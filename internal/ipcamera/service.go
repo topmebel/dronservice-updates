@@ -480,6 +480,26 @@ func (s *Service) Save(request SaveRequest) error {
 	return nil
 }
 
+func (s *Service) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.cameras[id]; !ok {
+		return ErrCameraNotFound
+	}
+	next := make(map[string]persistedCamera, len(s.cameras)-1)
+	for cameraID, camera := range s.cameras {
+		if cameraID != id {
+			next[cameraID] = camera
+		}
+	}
+	if err := writeJSONFile(s.filePath, next); err != nil {
+		return err
+	}
+	s.cameras = next
+	delete(s.online, id)
+	return nil
+}
+
 func prepareSaveRequest(request SaveRequest, savedPassword string) (SaveRequest, error) {
 	request.Name, request.Username = strings.TrimSpace(request.Name), strings.TrimSpace(request.Username)
 	request.Address, request.Manufacturer, request.Model = strings.TrimSpace(request.Address), canonicalManufacturer(request.Manufacturer), strings.TrimSpace(request.Model)

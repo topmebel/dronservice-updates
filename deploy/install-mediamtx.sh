@@ -17,21 +17,28 @@ printf '%s  %s\n' "$expected_checksum" "${work_dir}/${archive}" | sha256sum --ch
 tar -xzf "${work_dir}/${archive}" -C "$work_dir" mediamtx
 install -o root -g root -m 0755 "${work_dir}/mediamtx" /usr/local/bin/mediamtx
 install -d -o root -g root -m 0755 /usr/local/etc
+install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx
 
-if [ ! -e /usr/local/etc/mediamtx.yml ]; then
-  install -o root -g root -m 0644 /dev/null /usr/local/etc/mediamtx.yml
-  printf '%s\n' \
-    'logLevel: info' \
-    'api: yes' \
-    'apiAddress: 127.0.0.1:9997' \
-    'rtsp: yes' \
-    'rtspAddress: :554' \
-    'hls: yes' \
-    'hlsAddress: :8888' \
-    'moq: no' \
-    'paths:' \
-    '  all_others:' > /usr/local/etc/mediamtx.yml
+if [ ! -e /usr/local/etc/mediamtx/mediamtx.yml ]; then
+  if [ -e /usr/local/etc/mediamtx.yml ]; then
+    install -o admin -g admin -m 0660 /usr/local/etc/mediamtx.yml /usr/local/etc/mediamtx/mediamtx.yml
+  else
+    install -o admin -g admin -m 0660 /dev/null /usr/local/etc/mediamtx/mediamtx.yml
+    printf '%s\n' \
+      'logLevel: info' \
+      'api: yes' \
+      'apiAddress: 127.0.0.1:9997' \
+      'rtsp: yes' \
+      'rtspAddress: :554' \
+      'hls: yes' \
+      'hlsAddress: :8888' \
+      'moq: no' \
+      'paths:' \
+      '  all_others:' > /usr/local/etc/mediamtx/mediamtx.yml
+  fi
 fi
+chown admin:admin /usr/local/etc/mediamtx/mediamtx.yml
+chmod 0660 /usr/local/etc/mediamtx/mediamtx.yml
 
 systemctl daemon-reload
 systemctl enable --now mediamtx.service

@@ -17,12 +17,32 @@ func TestStartReturnsDirectURLForCameraOnLocalNetwork(t *testing.T) {
 		_, network, _ := net.ParseCIDR("192.168.1.0/24")
 		return []*net.IPNet{network}, nil
 	}})
-	result, err := manager.Start(Target{ID: "camera", Address: "192.168.1.20", HTTPPort: 8080})
+	result, err := manager.Start(Target{ID: "camera", Address: "192.168.1.20", ClientAddress: "192.168.1.50", HTTPPort: 8080})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Mode != "direct" || result.DirectURL != "http://192.168.1.20:8080/" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestStartProxiesWhenBrowserCannotReachCameraNetwork(t *testing.T) {
+	manager := NewManager(Config{
+		ListenAddress: "127.0.0.1:0",
+		LocalNetworks: func() ([]*net.IPNet, error) {
+			_, cameraNetwork, _ := net.ParseCIDR("192.168.50.0/24")
+			_, browserNetwork, _ := net.ParseCIDR("192.168.1.0/24")
+			return []*net.IPNet{cameraNetwork, browserNetwork}, nil
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+
+	result, err := manager.Start(Target{ID: "camera", Address: "192.168.50.20", ClientAddress: "192.168.1.50"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "proxy" || result.Address == "" {
+		t.Fatalf("result = %+v, want proxy", result)
 	}
 }
 
