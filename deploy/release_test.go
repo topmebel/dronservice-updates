@@ -28,7 +28,7 @@ func TestDeploymentManifestIsVersionedAndComplete(t *testing.T) {
 		t.Fatalf("schemaVersion = %d, want positive version", manifest.SchemaVersion)
 	}
 	joined := strings.Join(manifest.Assets, "\n")
-	for _, required := range []string{"dronservice-linux-arm64", "install-mediamtx.sh", "mediamtx.service", "dronservice.service", "dronservice-release.pub"} {
+	for _, required := range []string{"dronservice-linux-arm64", "dronservice-camera-network-helper", "dronservice-camera-network.service", "install-mediamtx.sh", "mediamtx.service", "dronservice.service", "dronservice-release.pub"} {
 		if !strings.Contains(joined, required) {
 			t.Errorf("deployment manifest lacks %q", required)
 		}

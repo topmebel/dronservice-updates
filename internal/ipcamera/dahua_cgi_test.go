@@ -26,6 +26,10 @@ func TestDahuaCGIChangeIPv4UsesDigestAndNetworkParameters(t *testing.T) {
 				}
 			}
 		}
+		if r.URL.Query().Get("action") == "getConfig" {
+			_, _ = w.Write([]byte("table.Network.eth0.IPAddress=192.168.1.108\n"))
+			return
+		}
 		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
@@ -36,6 +40,31 @@ func TestDahuaCGIChangeIPv4UsesDigestAndNetworkParameters(t *testing.T) {
 	}
 	if !configured {
 		t.Fatal("setConfig was not requested")
+	}
+}
+
+func TestDahuaCGIChangeIPv4DetectsIndexedNetworkFields(t *testing.T) {
+	var configured bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Digest ") {
+			w.Header().Set("WWW-Authenticate", `Digest realm="camera", nonce="nonce", qop="auth"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Query().Get("action") == "getConfig" {
+			_, _ = w.Write([]byte("table.Network.eth0[0].IPAddress=192.168.1.108\n"))
+			return
+		}
+		configured = r.URL.Query().Get("Network.eth0[0].IPAddress") == "192.168.88.40"
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+	parsed, _ := url.Parse(server.URL)
+	if err := newDahuaCGIClient().ChangeIPv4(context.Background(), parsed.Hostname(), uint16Port(t, parsed.Port()), "admin", "secret", "192.168.88.40", "255.255.255.0", "192.168.88.1"); err != nil {
+		t.Fatal(err)
+	}
+	if !configured {
+		t.Fatal("indexed Network fields were not used")
 	}
 }
 

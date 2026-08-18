@@ -28,6 +28,7 @@ MediaMTX API must remain bound to `127.0.0.1:9997`. Do not forward port 80,
 | `DRONSERVICE_UPDATE_REPOSITORY` | empty | public `owner/repository` for releases |
 | `DRONSERVICE_CAMERA_PROXY_TTL` | `15m` | camera web proxy lifetime |
 | `DRONSERVICE_CAMERA_PROXY_ADDR` | `:0` | temporary proxy listener |
+| `DRONSERVICE_CAMERA_NETWORK_INTERFACES` | `eth0,wlan0` | root helper interface allowlist |
 | `DRONSERVICE_STREAM_PREVIEW_TTL` | `10m` | HLS preview lifetime |
 | `DRONSERVICE_HLS_PUBLIC_URL` | detected Pi IPv4 on port 8888 | browser HLS base URL |
 
@@ -44,7 +45,20 @@ DRONSERVICE_CAMERA_PROXY_TTL=15m
 DRONSERVICE_CAMERA_PROXY_ADDR=:0
 ```
 
-Межсетевой экран Raspberry Pi должен разрешать выбранный порт. Reverse proxy не создаёт сетевой маршрут: Raspberry Pi должна иметь возможность установить TCP-соединение с текущим IP-адресом камеры.
+Межсетевой экран Raspberry Pi должен разрешать выбранный порт. Multicast discovery
+подтверждает присутствие камеры на Ethernet, но сам по себе не создаёт IPv4
+маршрут. Например, Raspberry Pi `192.168.88.254/24` может обнаружить Dahua
+`192.168.1.108/24`, но не сможет открыть HTTP через gateway
+`192.168.88.1`. В этом случае DronService просит отдельный root-owned helper
+временно добавить свободный secondary address наподобие
+`192.168.1.254/24` на подтверждённый `eth0`.
+
+Основной процесс остаётся пользователем `admin` без `CAP_NET_ADMIN`. Helper
+принимает только типизированную JSON-заявку для камеры из store, повторно
+проверяет IP/MAC/prefix/interface allowlist, выполняет ARP duplicate-address
+detection и назначает адресу kernel `valid_lft`. Адрес автоматически исчезает
+по TTL даже после аварии сервиса. Настройте разрешённые физические интерфейсы в
+`/etc/dronservice/camera-network.conf` и перезапустите path unit после изменения.
 
 ## Предпросмотр видеопотока
 
@@ -178,6 +192,8 @@ There is deliberately no `dronservice-update.timer`.
 Copy the release binary and the `deploy` directory to the target once, then run:
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y iproute2 iputils-arping
 sudo ./deploy/install-dronservice.sh ./dronservice-linux-arm64 owner/repository
 ```
 
@@ -206,7 +222,14 @@ previous directory under `/usr/local/lib/dronservice/releases/`, update the
 - `curl http://127.0.0.1/api/health` checks DronService locally.
 - `curl http://127.0.0.1:9997/v3/paths/list` checks MediaMTX locally.
 - A `no route to host` camera error requires an OS route/VLAN/interface fix;
-  reverse proxy does not create a network route.
+  если discovery сохранил MAC, mask и interface, temporary subnet helper может
+  безопасно создать ограниченный lease. При неизвестной mask адрес не угадывается.
+- Проверить helper: `systemctl status dronservice-camera-network.path` и
+  `journalctl -u dronservice-camera-network.service -n 100`.
+- Ручное восстановление: остановите proxy, дождитесь TTL либо удалите только
+  адрес, указанный в `/var/lib/dronservice/camera-network.leases.json`, командой
+  `sudo ip address del ADDRESS/PREFIX dev INTERFACE`. Не удаляйте постоянные
+  адреса интерфейса.
 - If MediaMTX config saving is denied after upgrading an old installation,
   rerun the current installers so `/usr/local/etc/mediamtx` is owned by `admin`.
 
@@ -233,6 +256,10 @@ uninitialized response still takes precedence.
 For an initialized camera with saved server-side credentials, DronService can
 read the main and sub-stream resolution/FPS from Dahua's `Encode`
 configuration and can change the static IPv4 address, subnet mask and gateway.
+Перед CGI-изменением DronService проверяет Digest authentication и определяет
+реальное семейство полей прошивки (`Network.eth0` или `Network.eth0[0]`). Смена
+IP может временно сделать камеру недоступной; не отключайте питание до проверки
+нового адреса и используйте старый IP/MAC из camera store для восстановления.
 The camera web interface is opened directly only when the camera belongs to a
 local Raspberry Pi subnet; otherwise DronService issues a temporary reverse
 proxy URL as described above.

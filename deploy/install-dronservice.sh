@@ -10,6 +10,9 @@ case "$(uname -m)" in
 	*) echo "DronService requires Linux ARM64/aarch64" >&2; exit 1 ;;
 esac
 id admin >/dev/null 2>&1 || { echo "required user admin does not exist" >&2; exit 1; }
+for command in /usr/sbin/ip /usr/sbin/arping; do
+	[ -x "$command" ] || { echo "missing required camera network command: $command" >&2; exit 1; }
+done
 if [ "$#" -ne 2 ]; then
 	echo "usage: install-dronservice.sh /path/to/dronservice-linux-arm64 owner/repository" >&2
 	exit 2
@@ -18,6 +21,8 @@ fi
 binary=$1
 repository=$2
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+helper_binary="$(dirname -- "$binary")/dronservice-camera-network-helper"
+[ -x "$helper_binary" ] || { echo "missing dronservice-camera-network-helper next to application binary" >&2; exit 2; }
 version=$("$binary" --version)
 printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
@@ -26,6 +31,7 @@ release_dir="/usr/local/lib/dronservice/releases/${version}"
 install -d -o root -g root -m 0755 "$release_dir" /usr/local/libexec /usr/local/etc /etc/dronservice
 install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx
 install -o root -g root -m 0755 "$binary" "${release_dir}/dronservice"
+install -o root -g root -m 0755 "$helper_binary" /usr/local/libexec/dronservice-camera-network-helper
 install -o root -g root -m 0755 "${script_dir}/update-dronservice.sh" /usr/local/libexec/dronservice-update
 install -o root -g root -m 0755 "${script_dir}/install-mediamtx.sh" /usr/local/libexec/dronservice-install-mediamtx
 install -o root -g root -m 0644 "${script_dir}/dronservice-release.pub" /usr/local/etc/dronservice-release.pub
@@ -35,6 +41,11 @@ install -o root -g root -m 0644 "${script_dir}/dronservice-update.path" /etc/sys
 install -o root -g root -m 0644 "${script_dir}/dronservice-mediamtx-install.service" /etc/systemd/system/dronservice-mediamtx-install.service
 install -o root -g root -m 0644 "${script_dir}/dronservice-mediamtx-install.path" /etc/systemd/system/dronservice-mediamtx-install.path
 install -o root -g root -m 0644 "${script_dir}/mediamtx.service" /etc/systemd/system/mediamtx.service
+install -o root -g root -m 0644 "${script_dir}/dronservice-camera-network.service" /etc/systemd/system/dronservice-camera-network.service
+install -o root -g root -m 0644 "${script_dir}/dronservice-camera-network.path" /etc/systemd/system/dronservice-camera-network.path
+if [ ! -e /etc/dronservice/camera-network.conf ]; then
+	install -o root -g root -m 0644 "${script_dir}/dronservice-camera-network.conf" /etc/dronservice/camera-network.conf
+fi
 
 if [ ! -e /usr/local/etc/mediamtx/mediamtx.yml ]; then
 	if [ -e /usr/local/etc/mediamtx.yml ]; then
@@ -60,7 +71,7 @@ ln -s /usr/local/lib/dronservice/current/dronservice "$next_binary"
 mv -Tf "$next_binary" /usr/local/bin/dronservice
 
 systemctl daemon-reload
-systemctl enable --now dronservice-update.path dronservice-mediamtx-install.path
+systemctl enable --now dronservice-update.path dronservice-mediamtx-install.path dronservice-camera-network.path
 systemctl enable dronservice.service
 systemctl restart dronservice.service
 

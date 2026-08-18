@@ -9,7 +9,7 @@ checksums=checksums.sha256
 signature=dronservice-linux-arm64.sig
 checksums_signature=checksums.sha256.sig
 manifest=deployment-manifest.json
-deployment_assets="install-dronservice.sh update-dronservice.sh install-mediamtx.sh install-video-runtime.sh dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path mediamtx.service mediamtx.yml dronservice-release.pub"
+deployment_assets="dronservice-camera-network-helper install-dronservice.sh update-dronservice.sh install-mediamtx.sh install-video-runtime.sh dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path dronservice-camera-network.service dronservice-camera-network.path dronservice-camera-network.conf mediamtx.service mediamtx.yml dronservice-release.pub"
 work_dir=
 previous_target=
 switched=false
@@ -42,6 +42,9 @@ rollback() {
 			"dronservice-update.path:/etc/systemd/system/dronservice-update.path" \
 			"dronservice-mediamtx-install.service:/etc/systemd/system/dronservice-mediamtx-install.service" \
 			"dronservice-mediamtx-install.path:/etc/systemd/system/dronservice-mediamtx-install.path" \
+			"dronservice-camera-network-helper:/usr/local/libexec/dronservice-camera-network-helper" \
+			"dronservice-camera-network.service:/etc/systemd/system/dronservice-camera-network.service" \
+			"dronservice-camera-network.path:/etc/systemd/system/dronservice-camera-network.path" \
 			"mediamtx.service:/etc/systemd/system/mediamtx.service"; do
 			name=${entry%%:*}; destination=${entry#*:}
 			if [ -e "${work_dir}/deployment-backup/${name}" ]; then
@@ -154,6 +157,9 @@ for entry in \
 	"dronservice-update.path:/etc/systemd/system/dronservice-update.path:0644" \
 	"dronservice-mediamtx-install.service:/etc/systemd/system/dronservice-mediamtx-install.service:0644" \
 	"dronservice-mediamtx-install.path:/etc/systemd/system/dronservice-mediamtx-install.path:0644" \
+	"dronservice-camera-network-helper:/usr/local/libexec/dronservice-camera-network-helper:0755" \
+	"dronservice-camera-network.service:/etc/systemd/system/dronservice-camera-network.service:0644" \
+	"dronservice-camera-network.path:/etc/systemd/system/dronservice-camera-network.path:0644" \
 	"mediamtx.service:/etc/systemd/system/mediamtx.service:0644"; do
 	name=${entry%%:*}; remainder=${entry#*:}; destination=${remainder%:*}; mode=${entry##*:}
 	if [ -e "$destination" ]; then cp -p "$destination" "${work_dir}/deployment-backup/${name}" || fail_update backup-deployment-failed; else : > "${work_dir}/deployment-backup/${name}.absent" || fail_update backup-deployment-failed; fi
@@ -161,14 +167,16 @@ done
 deployment_changed=true
 install -o root -g root -m 0755 "${work_dir}/update-dronservice.sh" /usr/local/libexec/dronservice-update || fail_update install-deployment-failed
 install -o root -g root -m 0755 "${work_dir}/install-mediamtx.sh" /usr/local/libexec/dronservice-install-mediamtx || fail_update install-deployment-failed
-for name in dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path mediamtx.service; do
+install -o root -g root -m 0755 "${work_dir}/dronservice-camera-network-helper" /usr/local/libexec/dronservice-camera-network-helper || fail_update install-deployment-failed
+for name in dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path dronservice-camera-network.service dronservice-camera-network.path mediamtx.service; do
 	install -o root -g root -m 0644 "${work_dir}/${name}" "/etc/systemd/system/${name}" || fail_update install-deployment-failed
 done
+if [ ! -e /etc/dronservice/camera-network.conf ]; then install -o root -g root -m 0644 "${work_dir}/dronservice-camera-network.conf" /etc/dronservice/camera-network.conf || fail_update install-deployment-failed; fi
 if [ ! -e /usr/local/etc/mediamtx/mediamtx.yml ]; then
 	if [ -e /usr/local/etc/mediamtx.yml ]; then install -o admin -g admin -m 0660 /usr/local/etc/mediamtx.yml /usr/local/etc/mediamtx/mediamtx.yml || fail_update migrate-mediamtx-config-failed; else install -o admin -g admin -m 0660 "${work_dir}/mediamtx.yml" /usr/local/etc/mediamtx/mediamtx.yml || fail_update install-mediamtx-config-failed; fi
 fi
 systemctl daemon-reload || fail_update daemon-reload-failed
-systemctl enable dronservice-update.path dronservice-mediamtx-install.path >/dev/null 2>&1 || fail_update enable-deployment-units-failed
+systemctl enable dronservice-update.path dronservice-mediamtx-install.path dronservice-camera-network.path >/dev/null 2>&1 || fail_update enable-deployment-units-failed
 
 next_current=/usr/local/lib/dronservice/.current-next
 next_binary=/usr/local/bin/.dronservice-next

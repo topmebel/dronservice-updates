@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"DronService/internal/buildinfo"
+	"DronService/internal/cameranetwork"
 	"DronService/internal/cameraproxy"
 	"DronService/internal/deviceconfig"
 	"DronService/internal/ipcamera"
@@ -102,6 +103,7 @@ func main() {
 		ListenAddress: os.Getenv("DRONSERVICE_CAMERA_PROXY_ADDR"),
 		TTL:           cameraProxyTTL,
 	})
+	cameraNetworkClient := cameranetwork.NewClient(dataDir, 10*time.Second)
 	streamSources := streamSourceCatalog{scanner: deviceScanner, devices: deviceStore, ipCameras: ipCameraService, ffmpegPath: "/usr/bin/ffmpeg"}
 	publicRTSPBase := os.Getenv("DRONSERVICE_RTSP_PUBLIC_URL")
 	if publicRTSPBase == "" {
@@ -169,7 +171,7 @@ func main() {
 	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/video-streams", ipCameraVideoStreamsHandler(ipCameraService))
 	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/preview", cameraPreviewStartHandler(ipCameraService, streamPreviewManager, publicHLSBase))
 	mux.HandleFunc("DELETE /api/ip-cameras/{cameraID}/preview/{sessionID}", cameraPreviewStopHandler(streamPreviewManager))
-	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/setup-access", cameraProxyStartHandler(ipCameraService, cameraProxyManager))
+	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/setup-access", cameraProxyStartHandler(ipCameraService, cameraProxyManager, cameraNetworkClient, cameraProxyTTL))
 	mux.HandleFunc("GET /api/zerotier", zeroTierStatusHandler(zeroTierClient, zeroTierUpdater))
 	mux.HandleFunc("POST /api/zerotier/update", zeroTierUpdateHandler(zeroTierUpdater))
 	mux.HandleFunc("POST /api/zerotier/networks", zeroTierJoinHandler(zeroTierClient))

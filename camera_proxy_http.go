@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net"
@@ -8,30 +9,48 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"DronService/internal/cameranetwork"
 	"DronService/internal/cameraproxy"
 	"DronService/internal/ipcamera"
 )
 
-func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Manager) http.HandlerFunc {
+type cameraNetworkEnsurer interface {
+	Ensure(context.Context, string, string, string, string, string, time.Duration) (cameranetwork.Lease, error)
+}
+
+func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Manager, networks cameraNetworkEnsurer, ttl time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		camera, ok := findCamera(cameras.List(), r.PathValue("cameraID"))
 		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Камера не найдена"})
 			return
 		}
-		result, err := proxies.Start(cameraproxy.Target{
+		target := cameraproxy.Target{
 			ID:            camera.ID,
 			Address:       camera.Address,
 			ClientAddress: requestClientAddress(r.RemoteAddr),
 			HTTPPort:      camera.HTTPPort,
-		})
+		}
+		result, err := proxies.Start(target)
+		var lease *cameranetwork.Lease
+		var connectivityErr *cameraproxy.ConnectivityError
+		if errors.As(err, &connectivityErr) && (connectivityErr.Diagnostic.ConnectError == "no route to host" || connectivityErr.Diagnostic.ConnectError == "network is unreachable" || connectivityErr.Diagnostic.ConnectError == "i/o timeout") {
+			created, leaseErr := networks.Ensure(r.Context(), camera.Address, camera.SubnetMask, camera.Gateway, camera.MAC, camera.InterfaceName, ttl)
+			if leaseErr != nil {
+				message := "Raspberry Pi обнаружила камеру на уровне Ethernet, но не имеет IP-адреса в подсети камеры."
+				writeJSON(w, http.StatusBadGateway, map[string]any{"error": message, "state": "helper_failed", "diagnostic": map[string]any{"piIPs": connectivityErr.Diagnostic.PiIPs, "cameraIP": camera.Address, "interface": camera.InterfaceName, "subnetMask": camera.SubnetMask, "connectError": connectivityErr.Diagnostic.ConnectError, "helperError": leaseErr.Error()}})
+				return
+			}
+			lease = &created
+			result, err = proxies.Start(target)
+		}
 		if err != nil {
 			if errors.Is(err, cameraproxy.ErrInvalidTarget) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "У камеры некорректный адрес для web-доступа"})
 				return
 			}
-			var connectivityErr *cameraproxy.ConnectivityError
 			if errors.As(err, &connectivityErr) {
 				message := "Не удалось подключиться к web-интерфейсу камеры"
 				if connectivityErr.Diagnostic.ConnectError == "no route to host" || connectivityErr.Diagnostic.ConnectError == "network is unreachable" {
@@ -62,7 +81,15 @@ func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Man
 			return
 		}
 		proxyURL := (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port), Path: "/"}).String()
-		writeJSON(w, http.StatusOK, map[string]any{"mode": "proxy", "url": proxyURL, "expiresAt": result.ExpiresAt})
+		response := map[string]any{"mode": "proxy", "state": "proxy_ready", "url": proxyURL, "expiresAt": result.ExpiresAt}
+		if lease != nil {
+			response["temporaryAddress"] = lease.Address
+			response["interface"] = lease.Interface
+			response["prefix"] = lease.Prefix
+			response["temporaryNetworkExpiresAt"] = lease.ExpiresAt
+			response["accessMethod"] = "temporary_network_ready"
+		}
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 

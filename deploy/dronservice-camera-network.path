@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for DronService camera network lease requests
+
+[Path]
+PathChanged=/var/lib/dronservice/camera-network.request.json
+Unit=dronservice-camera-network.service
+
+[Install]
+WantedBy=multi-user.target

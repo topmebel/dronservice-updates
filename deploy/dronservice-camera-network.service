@@ -1,0 +1,22 @@
+[Unit]
+Description=Apply a validated temporary camera network lease
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/dronservice-camera-network-helper
+Environment=DRONSERVICE_DATA_DIR=/var/lib/dronservice
+EnvironmentFile=-/etc/dronservice/camera-network.conf
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK AF_PACKET
+ReadWritePaths=/var/lib/dronservice

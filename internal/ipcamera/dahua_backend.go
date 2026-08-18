@@ -23,6 +23,7 @@ func (DahuaDiscoveryBackend) Discover(ctx context.Context, opts BackendOptions) 
 	type result struct {
 		devices []DahuaDevice
 		err     error
+		name    string
 	}
 	results := make(chan result, len(interfaceNames))
 	var wait sync.WaitGroup
@@ -31,15 +32,21 @@ func (DahuaDiscoveryBackend) Discover(ctx context.Context, opts BackendOptions) 
 		go func(name string) {
 			defer wait.Done()
 			devices, err := DiscoverDahua(ctx, DahuaDiscoverOptions{InterfaceName: name, Timeout: opts.Timeout})
-			results <- result{devices: devices, err: err}
+			results <- result{devices: devices, err: err, name: name}
 		}(interfaceName)
 	}
 	wait.Wait()
 	close(results)
-	var devices []DahuaDevice
+	type discovered struct {
+		device        DahuaDevice
+		interfaceName string
+	}
+	var devices []discovered
 	var errs []error
 	for result := range results {
-		devices = append(devices, result.devices...)
+		for _, device := range result.devices {
+			devices = append(devices, discovered{device: device, interfaceName: result.name})
+		}
 		if result.err != nil {
 			errs = append(errs, result.err)
 		}
@@ -48,8 +55,9 @@ func (DahuaDiscoveryBackend) Discover(ctx context.Context, opts BackendOptions) 
 		return nil, errors.Join(errs...)
 	}
 	out := make([]DiscoveredDevice, 0, len(devices))
-	for _, d := range devices {
-		out = append(out, DiscoveredDevice{Vendor: "Dahua", Manufacturer: d.Manufacturer, Protocols: []string{d.Protocol}, MAC: d.MAC, IP: d.IP, SubnetMask: d.SubnetMask, Gateway: d.Gateway, Model: d.Model, SerialNumber: d.SerialNumber, FirmwareVersion: d.FirmwareVersion, DeviceType: d.DeviceClass, DeviceName: d.MachineName, HTTPPort: d.HTTPPort, ServicePort: d.ServicePort, SourceAddress: d.SourceAddress, Confidence: "high", InitializationStatus: d.InitializationStatus})
+	for _, found := range devices {
+		d := found.device
+		out = append(out, DiscoveredDevice{Vendor: "Dahua", Manufacturer: d.Manufacturer, Protocols: []string{d.Protocol}, MAC: d.MAC, IP: d.IP, SubnetMask: d.SubnetMask, Gateway: d.Gateway, Model: d.Model, SerialNumber: d.SerialNumber, FirmwareVersion: d.FirmwareVersion, DeviceType: d.DeviceClass, DeviceName: d.MachineName, HTTPPort: d.HTTPPort, ServicePort: d.ServicePort, SourceAddress: d.SourceAddress, InterfaceName: found.interfaceName, Confidence: "high", InitializationStatus: d.InitializationStatus})
 	}
 	return out, nil
 }

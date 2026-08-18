@@ -40,6 +40,7 @@ type Camera struct {
 	DHCPEnabled          *bool                `json:"dhcpEnabled,omitempty"`
 	Protocol             string               `json:"protocol,omitempty"`
 	SourceAddress        string               `json:"sourceAddress,omitempty"`
+	InterfaceName        string               `json:"interfaceName,omitempty"`
 	LastSeen             time.Time            `json:"lastSeen,omitempty"`
 	InitializationStatus InitializationStatus `json:"initializationStatus"`
 	Username             string               `json:"username,omitempty"`
@@ -106,6 +107,7 @@ type persistedCamera struct {
 	DHCPEnabled          *bool                `json:"dhcpEnabled,omitempty"`
 	Protocol             string               `json:"protocol,omitempty"`
 	SourceAddress        string               `json:"sourceAddress,omitempty"`
+	InterfaceName        string               `json:"interfaceName,omitempty"`
 	LastSeen             time.Time            `json:"lastSeen,omitempty"`
 	InitializationStatus InitializationStatus `json:"initializationStatus,omitempty"`
 	MainStream           VideoStream          `json:"mainStream,omitempty"`
@@ -224,6 +226,9 @@ func updateGenericDiscoveredCamera(saved persistedCamera, id string, device Disc
 	saved.Protocol = strings.Join(device.Protocols, ", ")
 	if device.SourceAddress != nil {
 		saved.SourceAddress = device.SourceAddress.String()
+	}
+	if device.InterfaceName != "" {
+		saved.InterfaceName = device.InterfaceName
 	}
 	saved.LastSeen = seenAt
 	saved.InitializationStatus = initializationAfterDiscovery(saved.InitializationStatus, device.InitializationStatus)
@@ -623,6 +628,7 @@ func cameraFromPersisted(saved persistedCamera, online bool) Camera {
 		SubnetMask: saved.SubnetMask, Gateway: saved.Gateway, HTTPPort: saved.HTTPPort,
 		ServicePort: saved.ServicePort, DHCPEnabled: saved.DHCPEnabled, Protocol: saved.Protocol,
 		SourceAddress: saved.SourceAddress, LastSeen: saved.LastSeen,
+		InterfaceName:        saved.InterfaceName,
 		InitializationStatus: normalizeInitializationStatus(saved.InitializationStatus), Username: saved.Username,
 		HasPassword:    saved.Password != "",
 		MainStreamPath: rtspURLWithoutCredentials(mainStream),

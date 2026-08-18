@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "assets": [
     "dronservice-linux-arm64",
+    "dronservice-camera-network-helper",
     "install-dronservice.sh",
     "update-dronservice.sh",
     "install-mediamtx.sh",
@@ -11,6 +12,9 @@
     "dronservice-update.path",
     "dronservice-mediamtx-install.service",
     "dronservice-mediamtx-install.path",
+    "dronservice-camera-network.service",
+    "dronservice-camera-network.path",
+    "dronservice-camera-network.conf",
     "mediamtx.service",
     "mediamtx.yml",
     "dronservice-release.pub"

@@ -96,6 +96,11 @@ func TestInstallerCreatesWritablePathsBeforeStartingService(t *testing.T) {
 			t.Errorf("installer lacks production invariant %q", required)
 		}
 	}
+	for _, command := range []string{"/usr/sbin/ip", "/usr/sbin/arping"} {
+		if !strings.Contains(script, command) {
+			t.Errorf("installer does not validate %q", command)
+		}
+	}
 	mediaInstaller := readDeploymentFile(t, "install-mediamtx.sh")
 	createConfig := strings.Index(mediaInstaller, "install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx")
 	startMediaMTX := strings.Index(mediaInstaller, "systemctl enable --now mediamtx.service")
@@ -169,6 +174,29 @@ func TestMediaMTXServiceRunsHooksWithoutRoot(t *testing.T) {
 		if !strings.Contains(unit, fragment) {
 			t.Errorf("mediamtx.service does not contain %q", fragment)
 		}
+	}
+}
+
+func TestCameraNetworkPrivilegeIsIsolatedFromMainService(t *testing.T) {
+	mainUnit := readDeploymentFile(t, "dronservice.service")
+	if strings.Contains(mainUnit, "CAP_NET_ADMIN") {
+		t.Fatal("main DronService unit must not receive CAP_NET_ADMIN")
+	}
+	helper := readDeploymentFile(t, "dronservice-camera-network.service")
+	for _, required := range []string{"User=root", "CAP_NET_ADMIN CAP_NET_RAW", "NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true", "PrivateTmp=true", "ReadWritePaths=/var/lib/dronservice", "EnvironmentFile=-/etc/dronservice/camera-network.conf"} {
+		if !strings.Contains(helper, required) {
+			t.Errorf("camera network helper unit lacks %q", required)
+		}
+	}
+	pathUnit := readDeploymentFile(t, "dronservice-camera-network.path")
+	if !strings.Contains(pathUnit, "PathChanged=/var/lib/dronservice/camera-network.request.json") {
+		t.Fatal("camera network path does not watch the typed request")
+	}
+	installer := readDeploymentFile(t, "install-dronservice.sh")
+	installHelper := strings.Index(installer, "install -o root -g root -m 0755 \"$helper_binary\"")
+	startHelper := strings.Index(installer, "dronservice-camera-network.path")
+	if installHelper < 0 || startHelper < 0 || installHelper >= startHelper {
+		t.Fatal("root-owned helper must be installed before its path unit is enabled")
 	}
 }
 

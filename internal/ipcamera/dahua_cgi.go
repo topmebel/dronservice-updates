@@ -30,15 +30,20 @@ func newDahuaCGIClient() *dahuaCGIClient {
 func (c *dahuaCGIClient) ChangeIPv4(ctx context.Context, address string, port uint16, username, password, newAddress, subnet, gateway string) error {
 	base := dahuaHTTPBase(address, port)
 	check := base + "/cgi-bin/configManager.cgi?action=getConfig&name=Network"
-	if _, err := c.getDigest(ctx, check, username, password); err != nil {
+	networkConfig, err := c.getDigest(ctx, check, username, password)
+	if err != nil {
 		return err
 	}
-	values := url.Values{"action": {"setConfig"}, "Network.eth0.DhcpEnable": {"false"}, "Network.eth0.IPAddress": {newAddress}}
+	fieldPrefix, err := dahuaNetworkFieldPrefix(networkConfig)
+	if err != nil {
+		return err
+	}
+	values := url.Values{"action": {"setConfig"}, fieldPrefix + ".DhcpEnable": {"false"}, fieldPrefix + ".IPAddress": {newAddress}}
 	if subnet != "" {
-		values.Set("Network.eth0.SubnetMask", subnet)
+		values.Set(fieldPrefix+".SubnetMask", subnet)
 	}
 	if gateway != "" {
-		values.Set("Network.eth0.DefaultGateway", gateway)
+		values.Set(fieldPrefix+".DefaultGateway", gateway)
 	}
 	body, err := c.getDigest(ctx, base+"/cgi-bin/configManager.cgi?"+values.Encode(), username, password)
 	if err != nil {
@@ -48,6 +53,15 @@ func (c *dahuaCGIClient) ChangeIPv4(ctx context.Context, address string, port ui
 		return fmt.Errorf("change Dahua IP address: camera returned %q", strings.TrimSpace(body))
 	}
 	return nil
+}
+
+func dahuaNetworkFieldPrefix(body string) (string, error) {
+	for _, prefix := range []string{"Network.eth0[0]", "Network.eth0"} {
+		if strings.Contains(body, prefix+".") {
+			return prefix, nil
+		}
+	}
+	return "", errors.New("Dahua Network response has no supported eth0 fields")
 }
 
 func (c *dahuaCGIClient) VideoStreams(ctx context.Context, address string, port uint16, username, password string) (VideoStream, VideoStream, error) {
