@@ -1,26 +1,15 @@
 package main
 
 import (
-	"crypto/subtle"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 )
 
-type HTTPAccessConfig struct {
-	Username string
-	Password string
-}
-
-func secureHTTPHandler(next http.Handler, config HTTPAccessConfig) http.Handler {
+func secureHTTPHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w)
-		if !requestIsLoopback(r) && !validBasicAuth(r, config) {
-			w.Header().Set("WWW-Authenticate", `Basic realm="DronService", charset="UTF-8"`)
-			http.Error(w, "authentication required", http.StatusUnauthorized)
-			return
-		}
 		if changesState(r.Method) && !requestIsLoopback(r) && !sameOriginRequest(r) {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
@@ -34,21 +23,6 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-}
-
-func validBasicAuth(r *http.Request, config HTTPAccessConfig) bool {
-	if config.Username == "" || config.Password == "" {
-		return false
-	}
-	username, password, ok := r.BasicAuth()
-	return ok && constantTimeEqual(username, config.Username) && constantTimeEqual(password, config.Password)
-}
-
-func constantTimeEqual(value, expected string) bool {
-	if len(value) != len(expected) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(value), []byte(expected)) == 1
 }
 
 func requestIsLoopback(r *http.Request) bool {

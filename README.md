@@ -48,19 +48,12 @@ path неизвестные значения показываются как `�
 
 DronService is a Go service for managing MediaMTX, video devices and IP cameras on Linux ARM64 devices such as Raspberry Pi 5.
 
-## HTTP access protection
+## HTTP access
 
-Remote access is closed unless HTTP Basic credentials are configured. Create
-`/etc/dronservice/http-auth.conf` on the device with permissions `0600`:
-
-```text
-DRONSERVICE_HTTP_USER=operator
-DRONSERVICE_HTTP_PASSWORD=<long-random-password>
-```
-
-Loopback requests remain available for systemd health checks and the local
-updater. Put HTTPS in front of DronService before exposing it outside a trusted
-LAN; Basic credentials must not be sent over an untrusted plain HTTP network.
+DronService does not require a login and is intended for a trusted local
+network. Do not expose its HTTP port directly to the internet. Browser requests
+that change state are restricted to the same origin, and standard security
+headers are applied to every response.
 
 ## Versions
 

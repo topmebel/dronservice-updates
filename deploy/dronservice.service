@@ -14,7 +14,6 @@ ExecStart=/usr/local/bin/dronservice
 Environment=MEDIAMTX_URL=http://127.0.0.1:9997
 Environment=DRONSERVICE_DATA_DIR=/var/lib/dronservice
 Environment=DRONSERVICE_ADDR=:80
-EnvironmentFile=-/etc/dronservice/http-auth.conf
 EnvironmentFile=-/etc/dronservice/update.conf
 Restart=on-failure
 RestartSec=3s

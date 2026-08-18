@@ -182,11 +182,8 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr: listenAddress,
-		Handler: secureHTTPHandler(mux, HTTPAccessConfig{
-			Username: strings.TrimSpace(os.Getenv("DRONSERVICE_HTTP_USER")),
-			Password: os.Getenv("DRONSERVICE_HTTP_PASSWORD"),
-		}),
+		Addr:              listenAddress,
+		Handler:           secureHTTPHandler(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
