@@ -1,6 +1,66 @@
 # DronService
 
+## Временный доступ к web-интерфейсу IP-камеры
+
+На странице `/ip-cameras` кнопка доступа открывает камеру напрямую, если её IPv4-адрес входит в одну из локальных подсетей Raspberry Pi. Для камеры из другой подсети DronService запускает отдельный временный reverse proxy и возвращает браузеру адрес Raspberry Pi с временным портом.
+
+По умолчанию proxy работает 15 минут и слушает случайный свободный порт на всех интерфейсах. Параметры можно изменить:
+
+```text
+DRONSERVICE_CAMERA_PROXY_TTL=15m
+DRONSERVICE_CAMERA_PROXY_ADDR=:0
+```
+
+Межсетевой экран Raspberry Pi должен разрешать выбранный порт. Reverse proxy не создаёт сетевой маршрут: Raspberry Pi должна иметь возможность установить TCP-соединение с текущим IP-адресом камеры.
+
+## Предпросмотр видеопотока
+
+Кнопки Main и Sub в списке IP-камер создают временный
+`sourceOnDemand` path в MediaMTX для выбранного RTSP-потока. Кнопка в
+списке аналоговых камер открывает сохранённый V4L2-режим
+(YUYV/MJPEG, разрешение и FPS) через FFmpeg и перекодирует его в
+H.264/HLS для браузера. Перед аналоговым предпросмотром установите
+видео-runtime:
+
+```bash
+sudo ./deploy/install-video-runtime.sh
+```
+
+Браузер получает только HLS-адрес; RTSP-логин и пароль IP-камеры
+остаются на сервере. При закрытии модального окна временный path
+удаляется, а ограничение времени служит страховкой для незакрытой
+вкладки:
+
+```text
+DRONSERVICE_STREAM_PREVIEW_TTL=10m
+DRONSERVICE_HLS_PUBLIC_URL=http://192.168.1.147:8888
+```
+
+Если `DRONSERVICE_HLS_PUBLIC_URL` не указан, DronService использует основной
+IPv4 Raspberry Pi и HLS-порт `8888`. Этот TCP-порт должен быть доступен
+браузеру. IP-поток MediaMTX передаёт без перекодирования, поэтому кодек
+выбранного Main/Sub должен поддерживаться браузером.
+
+В таблице MediaMTX под каждым потоком показываются настройки его
+источника: разрешение, FPS и битрейт. Для аналогового H.264-потока
+битрейт обозначается как динамический (`CRF 23`); для несвязанных внешних
+path неизвестные значения показываются как `—`.
+
 DronService is a Go service for managing MediaMTX, video devices and IP cameras on Linux ARM64 devices such as Raspberry Pi 5.
+
+## HTTP access protection
+
+Remote access is closed unless HTTP Basic credentials are configured. Create
+`/etc/dronservice/http-auth.conf` on the device with permissions `0600`:
+
+```text
+DRONSERVICE_HTTP_USER=operator
+DRONSERVICE_HTTP_PASSWORD=<long-random-password>
+```
+
+Loopback requests remain available for systemd health checks and the local
+updater. Put HTTPS in front of DronService before exposing it outside a trusted
+LAN; Basic credentials must not be sent over an untrusted plain HTTP network.
 
 ## Versions
 
@@ -94,11 +154,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
 Dahua discovery uses the `Init` value from the DHIP `client.notifyDevInfo`
 response. Explicit boolean or textual initialized/uninitialized values are
 mapped to the application status. Missing and unknown vendor-specific values
-remain `unknown`; authentication success is not used as an initialization
-test.
+remain `unknown` until DronService successfully reads an authenticated camera
+configuration. That success is stored as positive initialization evidence and
+is not erased by a later inconclusive discovery response. An explicit
+uninitialized response still takes precedence.
 
 For an initialized camera with saved server-side credentials, DronService can
 read the main and sub-stream resolution/FPS from Dahua's `Encode`
 configuration and can change the static IPv4 address, subnet mask and gateway.
-The camera web interface is opened directly at its discovered IP address and
-HTTP port.
+The camera web interface is opened directly only when the camera belongs to a
+local Raspberry Pi subnet; otherwise DronService issues a temporary reverse
+proxy URL as described above.

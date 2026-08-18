@@ -3,6 +3,7 @@ package mediamtx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,21 @@ import (
 )
 
 const maxResponseBodySize = 10 << 20
+
+// HTTPError identifies a non-success response from the MediaMTX Control API.
+// Callers can make narrow status-specific decisions without parsing error text.
+type HTTPError struct {
+	StatusCode int
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("MediaMTX returned HTTP %d", e.StatusCode)
+}
+
+func IsHTTPStatus(err error, statusCode int) bool {
+	var httpErr *HTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == statusCode
+}
 
 type Client struct {
 	baseURL    string
@@ -58,7 +74,7 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("MediaMTX returned HTTP %d", resp.StatusCode)
+		return nil, &HTTPError{StatusCode: resp.StatusCode}
 	}
 
 	var pathsResponse PathsResponse
@@ -118,7 +134,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, input, output 
 		return fmt.Errorf("read MediaMTX response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("MediaMTX returned HTTP %d", resp.StatusCode)
+		return &HTTPError{StatusCode: resp.StatusCode}
 	}
 	if output != nil && len(responseBody) != 0 {
 		if err := json.Unmarshal(responseBody, output); err != nil {

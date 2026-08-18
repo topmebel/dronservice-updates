@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,10 +17,12 @@ import (
 	"time"
 
 	"DronService/internal/buildinfo"
+	"DronService/internal/cameraproxy"
 	"DronService/internal/deviceconfig"
 	"DronService/internal/ipcamera"
 	"DronService/internal/mediamtx"
 	"DronService/internal/stream"
+	"DronService/internal/streampreview"
 	"DronService/internal/updater"
 	"DronService/internal/v4l2"
 	"DronService/internal/zerotier"
@@ -86,11 +89,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("prepare IP camera service: %v", err)
 	}
-	streamSources := streamSourceCatalog{scanner: deviceScanner, devices: deviceStore, ipCameras: ipCameraService}
+	cameraProxyTTL := 15 * time.Minute
+	if configuredTTL, parseErr := time.ParseDuration(os.Getenv("DRONSERVICE_CAMERA_PROXY_TTL")); parseErr == nil && configuredTTL > 0 {
+		cameraProxyTTL = configuredTTL
+	}
+	cameraProxyManager := cameraproxy.NewManager(cameraproxy.Config{
+		ListenAddress: os.Getenv("DRONSERVICE_CAMERA_PROXY_ADDR"),
+		TTL:           cameraProxyTTL,
+	})
+	streamSources := streamSourceCatalog{scanner: deviceScanner, devices: deviceStore, ipCameras: ipCameraService, ffmpegPath: "/usr/bin/ffmpeg"}
 	publicRTSPBase := os.Getenv("DRONSERVICE_RTSP_PUBLIC_URL")
 	if publicRTSPBase == "" {
 		publicRTSPBase = "rtsp://dronservice.local:554"
 	}
+	publicHLSBase := strings.TrimSpace(os.Getenv("DRONSERVICE_HLS_PUBLIC_URL"))
+	if publicHLSBase == "" {
+		publicHLSBase = "http://" + net.JoinHostPort(preferredRTSPHost(), "8888")
+	}
+	if _, err := parseCameraPreviewHLSBase(publicHLSBase); err != nil {
+		log.Fatalf("validate public HLS URL: %v", err)
+	}
+	streamPreviewTTL := 10 * time.Minute
+	if configuredTTL, parseErr := time.ParseDuration(os.Getenv("DRONSERVICE_STREAM_PREVIEW_TTL")); parseErr == nil && configuredTTL > 0 {
+		streamPreviewTTL = configuredTTL
+	}
+	streamPreviewManager := streampreview.NewManager(streamService, streamPreviewTTL)
+	previewCleanupCtx, previewCleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := streamPreviewManager.Cleanup(previewCleanupCtx); err != nil {
+		log.Printf("clean stale stream previews: %v", err)
+	}
+	previewCleanupCancel()
 	ipCamerasPage, err := newIPCamerasPageHandler(ipCameraService)
 	if err != nil {
 		log.Fatalf("prepare IP cameras page: %v", err)
@@ -108,7 +136,7 @@ func main() {
 		log.Fatalf("prepare ZeroTier client: %v", err)
 	}
 	zeroTierUpdater := zerotier.NewUpdater(filepath.Join(dataDir, "update-zerotier.request"))
-	streamsPage, err := newStreamsPageHandler(streamService, streamSources, mediaMTXInstaller, zeroTierClient, publicRTSPBase)
+	streamsPage, err := newStreamsPageHandler(streamService, streamSources, mediaMTXInstaller, zeroTierClient, publicRTSPBase, publicHLSBase)
 	if err != nil {
 		log.Fatalf("prepare streams page: %v", err)
 	}
@@ -132,12 +160,17 @@ func main() {
 	mux.HandleFunc("POST /api/ip-cameras/discover", ipCameraDiscoveryHandler(ipCameraService))
 	mux.HandleFunc("POST /api/ip-cameras/status", ipCameraStatusHandler(ipCameraService))
 	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/video-streams", ipCameraVideoStreamsHandler(ipCameraService))
+	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/preview", cameraPreviewStartHandler(ipCameraService, streamPreviewManager, publicHLSBase))
+	mux.HandleFunc("DELETE /api/ip-cameras/{cameraID}/preview/{sessionID}", cameraPreviewStopHandler(streamPreviewManager))
+	mux.HandleFunc("POST /api/ip-cameras/{cameraID}/setup-access", cameraProxyStartHandler(ipCameraService, cameraProxyManager))
 	mux.HandleFunc("GET /api/zerotier", zeroTierStatusHandler(zeroTierClient, zeroTierUpdater))
 	mux.HandleFunc("POST /api/zerotier/update", zeroTierUpdateHandler(zeroTierUpdater))
 	mux.HandleFunc("POST /api/zerotier/networks", zeroTierJoinHandler(zeroTierClient))
 	mux.HandleFunc("DELETE /api/zerotier/networks/{networkID}", zeroTierLeaveHandler(zeroTierClient))
 	mux.HandleFunc("GET /api/video-devices", videoDevicesHandler(deviceScanner, deviceStore))
 	mux.HandleFunc("POST /api/video-devices/config", saveVideoDeviceHandler(deviceScanner, deviceStore))
+	mux.HandleFunc("POST /api/video-devices/{deviceID}/preview", analogPreviewStartHandler(streamSources, streamPreviewManager, publicHLSBase))
+	mux.HandleFunc("DELETE /api/video-devices/{deviceID}/preview/{sessionID}", analogPreviewStopHandler(streamPreviewManager))
 	mux.Handle("GET /devices", devicesPage)
 	mux.Handle("GET /streams", streamsPage)
 	mux.Handle("GET /ip-cameras", ipCamerasPage)
@@ -149,8 +182,11 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:              listenAddress,
-		Handler:           mux,
+		Addr: listenAddress,
+		Handler: secureHTTPHandler(mux, HTTPAccessConfig{
+			Username: strings.TrimSpace(os.Getenv("DRONSERVICE_HTTP_USER")),
+			Password: os.Getenv("DRONSERVICE_HTTP_PASSWORD"),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -161,22 +197,36 @@ func main() {
 	defer stop()
 	go ipCameraService.Monitor(shutdownSignal, monitorInterval(os.Getenv("DRONSERVICE_CAMERA_MONITOR_INTERVAL")))
 
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-shutdownSignal.Done()
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		httpShutdownCtx, cancelHTTPShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := server.Shutdown(httpShutdownCtx); err != nil {
 			log.Printf("HTTP server shutdown: %v", err)
+		}
+		cancelHTTPShutdown()
+
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		if err := cameraProxyManager.Close(cleanupCtx); err != nil {
+			log.Printf("camera setup proxy shutdown: %v", err)
+		}
+		if err := streamPreviewManager.Close(cleanupCtx); err != nil {
+			log.Printf("camera stream preview shutdown: %v", err)
 		}
 	}()
 
 	log.Printf("DronService started on %s", server.Addr)
 	log.Printf("MediaMTX URL: %s", mediaMTXURL)
 
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("HTTP server: %v", err)
+	serveErr := server.ListenAndServe()
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		log.Fatalf("HTTP server: %v", serveErr)
+	}
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		<-shutdownDone
 	}
 }
 
@@ -353,6 +403,7 @@ const devicesPageHTML = `<!doctype html>
     select, input { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #4b5563; border-radius: 6px; background: #111827; color: #e5e7eb; }
     .actions { margin-top: 24px; text-align: right; }
     button { padding: 9px 18px; border: 0; border-radius: 6px; cursor: pointer; } .toggle-cell{vertical-align:middle;text-align:center}.toggle{position:relative;display:inline-block;margin:0;width:42px;height:24px;padding:0;border:0;border-radius:24px;background:#4b5563;cursor:pointer;vertical-align:middle;transition:.2s}.toggle:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;border-radius:50%;background:#fff;transition:.2s}.toggle[aria-checked="true"]{background:#2563eb}.toggle[aria-checked="true"]:before{transform:translateX(18px)}.toggle[aria-readonly="true"]{cursor:default}.camera-name-row{display:flex;align-items:flex-end;gap:18px}.camera-name-field{flex:1}.media-toggle-label{display:flex;align-items:flex-start;flex-direction:column;gap:5px;margin:0 0 5px;white-space:nowrap}.media-toggle-label input{appearance:none;position:relative;width:42px;height:24px;padding:0;border:0;border-radius:24px;background:#4b5563;cursor:pointer;transition:.2s}.media-toggle-label input:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;border-radius:50%;background:#fff;transition:.2s}.media-toggle-label input:checked{background:#2563eb}.media-toggle-label input:checked:before{transform:translateX(18px)}@media(max-width:600px){.camera-name-row{align-items:stretch;flex-direction:column;gap:8px}.media-toggle-label{margin-top:0}}
+    .table-wrap{overflow-x:auto;border-radius:10px}.table-wrap table{min-width:1060px}.camera-row td{border-bottom:0!important}.stream-details-row{cursor:default;background:#172033}.stream-details-row:hover{background:#172033!important}.stream-details-row td{padding:8px 12px 12px!important;border-bottom:1px solid #4b5563!important}.stream-details{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px}.stream-detail{color:#cbd5e1;font-size:.84rem}.stream-detail strong{margin-right:5px;color:#93c5fd}.camera-link{display:inline-flex;align-items:center;justify-content:center;margin-left:6px;padding:5px 9px;border:1px solid #4b5563;color:#bfdbfe;font-size:12px;line-height:1.2}.preview-button{min-height:32px;white-space:nowrap}.preview-dialog{width:min(960px,calc(100% - 40px))}.preview-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.preview-header h2{margin:0}.preview-metadata{margin:12px 0 0;padding:9px 12px;border:1px solid #374151;border-radius:6px;background:#111827;color:#cbd5e1}.preview-metadata p{margin:3px 0}.preview-frame{display:block;width:100%;aspect-ratio:16/9;margin-top:12px;border:0;border-radius:8px;background:#000}.preview-status{min-height:1.5em;margin:10px 0 0;color:#cbd5e1}
   </style>
 </head>
 <body>
@@ -360,19 +411,22 @@ const devicesPageHTML = `<!doctype html>
   <div id="network-info" style="display:flex;align-items:center;gap:10px;margin:-22px 6px 28px;color:#9ca3af;font-size:.9rem"><span id="network-addresses">Сеть: получение адресов…</span><button id="update-app" type="button" hidden style="padding:5px 9px">Обновить</button><span id="update-app-state"></span></div>
   <h1>Список аналоговых камер</h1>
   {{if .Devices}}
-  <table>
+  <div class="table-wrap"><table>
     <thead><tr><th>Порт</th><th>Устройство</th><th class="toggle-cell">MediaMTX</th><th>Драйвер</th><th>Шина</th><th>Версия</th><th>Возможности</th></tr></thead>
     <tbody id="devices-body">
     {{range .Devices}}
-      <tr data-device-path="{{.Path}}" title="Двойной клик для выбора режима">
+      <tr class="camera-row" data-device-path="{{.Path}}" title="Двойной клик для выбора режима">
         <td><code>{{.Path}}</code></td>
         <td>{{if .ConfiguredName}}<strong>{{.ConfiguredName}}</strong><br>{{end}}{{if .Card}}{{.Card}}{{else}}{{.Name}}{{end}}{{if .Error}}<br><span class="error">{{.Error}}</span>{{end}}</td><td class="toggle-cell"><button type="button" class="toggle device-use-toggle" role="switch" aria-checked="{{if .Use}}true{{else}}false{{end}}" aria-readonly="true" title="Состояние использования в MediaMTX"></button></td>
         <td>{{.Driver}}</td><td>{{.Bus}}</td><td>{{.Version}}</td>
         <td>{{range $index, $value := .Capabilities}}{{if $index}}, {{end}}{{$value}}{{end}}</td>
       </tr>
+      <tr class="stream-details-row" data-stream-details="{{.ID}}">
+        <td colspan="7"><div class="stream-details"><span class="stream-detail"><strong>Захват:</strong><span data-device-stream>{{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{.SelectedFormat}} · {{.SelectedResolution}} · {{.SelectedFPS}} FPS{{else}}Режим не настроен{{end}}</span><button type="button" class="camera-link preview-button" data-device-preview="{{.ID}}" aria-label="Открыть предпросмотр аналоговой камеры {{if .ConfiguredName}}{{.ConfiguredName}}{{else}}{{.Path}}{{end}}" {{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{else}}disabled title="Сначала выберите формат, разрешение и FPS"{{end}}>Просмотр ▶</button></span></div></td>
+      </tr>
     {{end}}
     </tbody>
-  </table>
+  </table></div>
   {{else}}<p class="empty">V4L2-устройства не обнаружены.</p>{{end}}
   <dialog id="modes-dialog">
     <h2 id="dialog-title">Режимы камеры</h2>
@@ -383,14 +437,99 @@ const devicesPageHTML = `<!doctype html>
     <select id="mode-select"></select>
     <div class="actions"><button id="close-dialog" type="button">Закрыть</button> <button id="save-camera" type="button">Сохранить</button></div>
   </dialog>
+  <dialog id="device-preview-dialog" class="preview-dialog" aria-labelledby="device-preview-title" aria-describedby="device-preview-metadata">
+    <div class="preview-header"><h2 id="device-preview-title">Предпросмотр аналоговой камеры</h2><button id="device-preview-close" type="button">Закрыть</button></div>
+    <div id="device-preview-metadata" class="preview-metadata" aria-live="polite"><p id="device-preview-capture"></p><p id="device-preview-output">Воспроизведение: H.264 / HLS · Битрейт: Динамический (CRF 23)</p></div>
+    <iframe id="device-preview-frame" class="preview-frame" title="Предпросмотр аналоговой камеры" scrolling="no" sandbox="allow-scripts allow-same-origin" allow="autoplay; fullscreen" referrerpolicy="no-referrer"></iframe>
+    <p id="device-preview-status" class="preview-status" role="status" aria-live="polite"></p>
+  </dialog>
   <script>
     const dialog = document.querySelector('#modes-dialog');
     const title = document.querySelector('#dialog-title');
     const cameraName = document.querySelector('#camera-name');
-	const useCamera = document.querySelector('#use-camera');
+    const useCamera = document.querySelector('#use-camera');
     const formatSelect = document.querySelector('#format-select');
     const modeSelect = document.querySelector('#mode-select');
+    const previewDialog = document.querySelector('#device-preview-dialog');
+    const previewTitle = document.querySelector('#device-preview-title');
+    const previewCapture = document.querySelector('#device-preview-capture');
+    const previewOutput = document.querySelector('#device-preview-output');
+    const previewFrame = document.querySelector('#device-preview-frame');
+    const previewStatus = document.querySelector('#device-preview-status');
     let selectedDevice;
+    let previewSession = null;
+    let previewRequestGeneration = 0;
+    let previewTrigger = null;
+
+    function renderAnalogPreviewMetadata(stream) {
+      previewCapture.textContent = 'Захват: ' + (stream?.pixelFormat || '—') + ' · ' + (stream?.resolution || '—') + ' · ' + (stream?.fps ? stream.fps + ' FPS' : '—');
+      previewOutput.textContent = 'Воспроизведение: H.264 / HLS · Битрейт: Динамический (' + (stream?.bitrateMode || 'CRF 23') + ')';
+    }
+
+    async function stopAnalogPreviewSession(session) {
+      if (!session) return;
+      try {
+        await fetch('/api/video-devices/' + encodeURIComponent(session.deviceID) + '/preview/' + encodeURIComponent(session.sessionID), {method: 'DELETE', keepalive: true});
+      } catch (error) {}
+    }
+
+    async function clearAnalogPreview() {
+      const session = previewSession;
+      previewSession = null;
+      previewRequestGeneration++;
+      previewFrame.src = 'about:blank';
+      previewCapture.textContent = '';
+      previewStatus.textContent = '';
+      previewDialog.removeAttribute('aria-busy');
+      await stopAnalogPreviewSession(session);
+    }
+
+    async function openAnalogPreview(button) {
+      const deviceID = button.dataset.devicePreview;
+      const details = button.closest('tr[data-stream-details]');
+      const row = details?.previousElementSibling;
+      const name = row?.querySelector('td:nth-child(2) strong')?.textContent?.trim() || row?.querySelector('td:nth-child(2)')?.textContent?.trim() || row?.querySelector('code')?.textContent?.trim() || 'Аналоговая камера';
+      const generation = ++previewRequestGeneration;
+      let startedSession = null;
+      previewTrigger = button;
+      button.disabled = true;
+      previewTitle.textContent = 'Предпросмотр · ' + name;
+      previewFrame.title = 'Предпросмотр аналоговой камеры ' + name;
+      previewFrame.src = 'about:blank';
+      previewCapture.textContent = 'Захват: проверка сохранённых настроек…';
+      previewStatus.textContent = 'Подготовка HLS-потока…';
+      previewDialog.setAttribute('aria-busy', 'true');
+      previewDialog.showModal();
+      try {
+        const response = await fetch('/api/video-devices/' + encodeURIComponent(deviceID) + '/preview', {method: 'POST'});
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'Не удалось запустить предпросмотр аналоговой камеры');
+        if (!result.sessionId || !result.url || !result.stream) throw new Error('Сервис вернул неполные данные предпросмотра');
+        startedSession = {deviceID: deviceID, sessionID: result.sessionId};
+        if (generation !== previewRequestGeneration || !previewDialog.open) {
+          await stopAnalogPreviewSession(startedSession);
+          startedSession = null;
+          return;
+        }
+        const playerURL = new URL(result.url);
+        if (!/^https?:$/.test(playerURL.protocol) || playerURL.username || playerURL.password) throw new Error('Получен недопустимый адрес предпросмотра');
+        renderAnalogPreviewMetadata(result.stream);
+        previewSession = startedSession;
+        startedSession = null;
+        playerURL.searchParams.set('controls', 'true');
+        playerURL.searchParams.set('muted', 'true');
+        playerURL.searchParams.set('autoplay', 'true');
+        playerURL.searchParams.set('playsInline', 'true');
+        previewFrame.src = playerURL.toString();
+        previewStatus.textContent = '';
+      } catch (error) {
+        await stopAnalogPreviewSession(startedSession);
+        if (generation === previewRequestGeneration && previewDialog.open) previewStatus.textContent = error.message;
+      } finally {
+        if (button.isConnected) button.disabled = false;
+        if (generation === previewRequestGeneration) previewDialog.removeAttribute('aria-busy');
+      }
+    }
 
     function fillModes() {
       modeSelect.replaceChildren();
@@ -415,7 +554,7 @@ const devicesPageHTML = `<!doctype html>
 
       title.textContent = (selectedDevice.card || selectedDevice.name) + ' (' + selectedDevice.path + ')';
       cameraName.value = selectedDevice.configuredName || '';
-	  useCamera.checked = !!selectedDevice.use;
+      useCamera.checked = !!selectedDevice.use;
       formatSelect.replaceChildren();
       for (const format of selectedDevice.formats) {
         const label = format.description ? format.pixelFormat + ' — ' + format.description : format.pixelFormat;
@@ -438,9 +577,20 @@ const devicesPageHTML = `<!doctype html>
       dialog.showModal();
     }
 
-    const devicesBody=document.querySelector('#devices-body');devicesBody?.addEventListener('dblclick',event=>{if(event.target.closest('.toggle'))return;const row=event.target.closest('tr[data-device-path]');if(row)openModes(row.dataset.devicePath).catch(error=>window.alert(error.message))});
+    const devicesBody=document.querySelector('#devices-body');devicesBody?.addEventListener('dblclick',event=>{if(event.target.closest('button'))return;const row=event.target.closest('tr[data-device-path]');if(row)openModes(row.dataset.devicePath).catch(error=>window.alert(error.message))});
+    devicesBody?.addEventListener('click', event => {
+      const button = event.target.closest('[data-device-preview]');
+      if (button && !button.disabled) void openAnalogPreview(button);
+    });
     formatSelect.addEventListener('change', fillModes);
     document.querySelector('#close-dialog').addEventListener('click', () => dialog.close());
+    document.querySelector('#device-preview-close').addEventListener('click', () => previewDialog.close());
+    previewDialog.addEventListener('close', () => {
+      const trigger = previewTrigger;
+      previewTrigger = null;
+      void clearAnalogPreview();
+      if (trigger?.isConnected) trigger.focus();
+    });
     document.querySelector('#save-camera').addEventListener('click', async () => {
       const format = selectedDevice?.formats[formatSelect.selectedIndex];
       const mode = format?.modes[modeSelect.selectedIndex];
@@ -453,12 +603,12 @@ const devicesPageHTML = `<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           deviceId: selectedDevice.id,
-		  devicePath: selectedDevice.path,
+          devicePath: selectedDevice.path,
           name: cameraName.value.trim(),
           pixelFormat: format.pixelFormat,
           resolution: mode.resolution,
-		  fps: mode.fps,
-		  use: useCamera.checked
+          fps: mode.fps,
+          use: useCamera.checked
         })
       });
       if (!response.ok) {
@@ -472,7 +622,7 @@ const devicesPageHTML = `<!doctype html>
     dialog.addEventListener('click', event => {
       if (event.target === dialog) dialog.close();
     });
-    async function refreshDevices(){if(dialog.open)return;try{const html=await fetch('/devices',{cache:'no-store'}).then(r=>r.text());const next=new DOMParser().parseFromString(html,'text/html').querySelector('#devices-body');const current=document.querySelector('#devices-body');if(next&&current)current.replaceChildren(...next.children)}catch(error){}}
+    async function refreshDevices(){if(dialog.open||previewDialog.open)return;try{const html=await fetch('/devices',{cache:'no-store'}).then(r=>r.text());const next=new DOMParser().parseFromString(html,'text/html').querySelector('#devices-body');const current=document.querySelector('#devices-body');if(next&&current)current.replaceChildren(...next.children)}catch(error){}}
     const refreshTimer=window.setInterval(refreshDevices,5000);
     function updateInternetStatus(){fetch('/api/system/internet').then(r=>{if(!r.ok)throw new Error('status unavailable');return r.json()}).then(s=>{const e=document.querySelector('#internet-status'),states={online:['есть','#86efac'],offline:['нет','#fca5a5'],unknown:['не удалось проверить','#fbbf24']},state=states[s.status]||states[s.online?'online':'unknown'];e.textContent='Интернет: '+state[0];e.style.color=state[1]}).catch(()=>{const e=document.querySelector('#internet-status');e.textContent='Интернет: статус недоступен';e.style.color='#9ca3af'}).finally(()=>setTimeout(updateInternetStatus,10000))}updateInternetStatus();function updateNetworkInfo(){fetch('/api/system/network').then(r=>{if(!r.ok)throw new Error('network unavailable');return r.json()}).then(s=>{const parts=['LAN: '+(s.lan?.join(', ')||'—'),'Wi-Fi: '+(s.wifi?.join(', ')||'—')];if(s.localName)parts.push('Имя: '+s.localName);document.querySelector('#network-addresses').textContent=parts.join(' · ')}).catch(()=>document.querySelector('#network-addresses').textContent='Сеть: адреса недоступны')}updateNetworkInfo();document.querySelectorAll('.main-nav a').forEach(link => {
       link.addEventListener('click', () => window.clearInterval(refreshTimer));

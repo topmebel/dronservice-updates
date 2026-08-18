@@ -2,6 +2,7 @@ package mediamtx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,6 +33,22 @@ func TestClientListPaths(t *testing.T) {
 	}
 	if got := len(paths[0].Readers); got != 1 {
 		t.Fatalf("readers = %d, want 1", got)
+	}
+}
+
+func TestClientReturnsTypedHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	err := NewClient(server.URL, "", "").DeleteConfigPath(context.Background(), "missing")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("DeleteConfigPath() error = %T %v, want *HTTPError", err, err)
+	}
+	if httpErr.StatusCode != http.StatusNotFound || !IsHTTPStatus(err, http.StatusNotFound) || IsHTTPStatus(err, http.StatusUnauthorized) {
+		t.Fatalf("HTTP error = %+v", httpErr)
 	}
 }
 

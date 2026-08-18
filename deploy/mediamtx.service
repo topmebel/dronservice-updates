@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=admin
+Group=admin
+SupplementaryGroups=video
 ExecStart=/usr/local/bin/mediamtx /usr/local/etc/mediamtx.yml
 Restart=on-failure
 RestartSec=3s

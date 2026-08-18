@@ -3,3 +3,6 @@
 /checksums.sha256
 /*.sig
 /release/
+/admin
+/admin.pub
+/.tmp-*

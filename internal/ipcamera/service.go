@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-var ErrCameraNotFound = errors.New("IP camera not found")
+var (
+	ErrCameraNotFound       = errors.New("IP camera not found")
+	ErrInvalidPreviewStream = errors.New("invalid camera preview stream")
+)
 
 type Camera struct {
 	ID                   string               `json:"id"`
@@ -40,7 +43,6 @@ type Camera struct {
 	LastSeen             time.Time            `json:"lastSeen,omitempty"`
 	InitializationStatus InitializationStatus `json:"initializationStatus"`
 	Username             string               `json:"username,omitempty"`
-	Password             string               `json:"password,omitempty"`
 	HasPassword          bool                 `json:"hasPassword"`
 	MainStreamPath       string               `json:"mainStreamPath,omitempty"`
 	SubStreamPath        string               `json:"subStreamPath,omitempty"`
@@ -59,8 +61,9 @@ const (
 )
 
 type VideoStream struct {
-	Resolution string `json:"resolution,omitempty"`
-	FPS        string `json:"fps,omitempty"`
+	Resolution  string `json:"resolution,omitempty"`
+	FPS         string `json:"fps,omitempty"`
+	BitrateKbps uint32 `json:"bitrateKbps,omitempty"`
 }
 
 type SaveRequest struct {
@@ -223,12 +226,16 @@ func updateGenericDiscoveredCamera(saved persistedCamera, id string, device Disc
 		saved.SourceAddress = device.SourceAddress.String()
 	}
 	saved.LastSeen = seenAt
-	saved.InitializationStatus = normalizeInitializationStatus(device.InitializationStatus)
+	saved.InitializationStatus = initializationAfterDiscovery(saved.InitializationStatus, device.InitializationStatus)
 	if saved.MainStreamPath == "" {
 		saved.MainStreamPath = mainStream
+	} else {
+		saved.MainStreamPath = replaceURLHost(saved.MainStreamPath, device.IP.String())
 	}
 	if saved.SubStreamPath == "" {
 		saved.SubStreamPath = subStream
+	} else {
+		saved.SubStreamPath = replaceURLHost(saved.SubStreamPath, device.IP.String())
 	}
 	return saved
 }
@@ -345,12 +352,16 @@ func updateDiscoveredCamera(saved persistedCamera, id string, device DahuaDevice
 		saved.SourceAddress = device.SourceAddress.String()
 	}
 	saved.LastSeen = seenAt
-	saved.InitializationStatus = normalizeInitializationStatus(device.InitializationStatus)
+	saved.InitializationStatus = initializationAfterDiscovery(saved.InitializationStatus, device.InitializationStatus)
 	if saved.MainStreamPath == "" {
 		saved.MainStreamPath = mainStream
+	} else {
+		saved.MainStreamPath = replaceURLHost(saved.MainStreamPath, device.IP.String())
 	}
 	if saved.SubStreamPath == "" {
 		saved.SubStreamPath = subStream
+	} else {
+		saved.SubStreamPath = replaceURLHost(saved.SubStreamPath, device.IP.String())
 	}
 	return saved
 }
@@ -418,6 +429,7 @@ func (s *Service) RefreshVideoStreams(ctx context.Context, id string) (Camera, e
 		next[cameraID] = camera
 	}
 	current.MainStream, current.SubStream = mainStream, subStream
+	current.InitializationStatus = InitializationCompleted
 	next[id] = current
 	if err := writeJSONFile(s.filePath, next); err != nil {
 		return Camera{}, err
@@ -485,6 +497,10 @@ func prepareSaveRequest(request SaveRequest, savedPassword string) (SaveRequest,
 	if err != nil {
 		return request, err
 	}
+	if ip != nil {
+		request.MainStreamPath = replaceURLHost(request.MainStreamPath, ip.String())
+		request.SubStreamPath = replaceURLHost(request.SubStreamPath, ip.String())
+	}
 	if request.ID == "" || request.Name == "" || ip == nil || request.Manufacturer == "Unknown" || request.MainStreamPath == "" || request.SubStreamPath == "" {
 		return request, fmt.Errorf("camera ID, name, address and both RTSP paths are required")
 	}
@@ -539,8 +555,6 @@ func (s *Service) SaveWithCameraUpdate(ctx context.Context, request SaveRequest)
 		dhcpDisabled := false
 		request.dhcpEnabled = &dhcpDisabled
 		request.Username, request.Password = username, password
-		request.MainStreamPath = replaceURLHost(request.MainStreamPath, current.Address, request.Address)
-		request.SubStreamPath = replaceURLHost(request.SubStreamPath, current.Address, request.Address)
 	}
 	return s.Save(request)
 }
@@ -564,9 +578,9 @@ func validateIPv4Network(address, subnet, gateway string) error {
 	return nil
 }
 
-func replaceURLHost(value, oldAddress, newAddress string) string {
+func replaceURLHost(value, newAddress string) string {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Hostname() != oldAddress {
+	if err != nil {
 		return value
 	}
 	port := parsed.Port()
@@ -590,9 +604,9 @@ func cameraFromPersisted(saved persistedCamera, online bool) Camera {
 		ServicePort: saved.ServicePort, DHCPEnabled: saved.DHCPEnabled, Protocol: saved.Protocol,
 		SourceAddress: saved.SourceAddress, LastSeen: saved.LastSeen,
 		InitializationStatus: normalizeInitializationStatus(saved.InitializationStatus), Username: saved.Username,
-		Password: saved.Password, HasPassword: saved.Password != "",
-		MainStreamPath: rtspURLWithCredentials(mainStream, saved.Username, saved.Password),
-		SubStreamPath:  rtspURLWithCredentials(saved.SubStreamPath, saved.Username, saved.Password),
+		HasPassword:    saved.Password != "",
+		MainStreamPath: rtspURLWithoutCredentials(mainStream),
+		SubStreamPath:  rtspURLWithoutCredentials(saved.SubStreamPath),
 		MainStream:     saved.MainStream, SubStream: saved.SubStream,
 		Online: online, Use: saved.Use,
 	}
@@ -607,11 +621,66 @@ func normalizeInitializationStatus(status InitializationStatus) InitializationSt
 	}
 }
 
+func initializationAfterDiscovery(previous, observed InitializationStatus) InitializationStatus {
+	observed = normalizeInitializationStatus(observed)
+	if observed != InitializationUnknown {
+		return observed
+	}
+	if normalizeInitializationStatus(previous) == InitializationCompleted {
+		return InitializationCompleted
+	}
+	return InitializationUnknown
+}
+
 type StreamSource struct {
-	ID     string
-	Name   string
-	Detail string
-	URL    string
+	ID       string
+	Name     string
+	Detail   string
+	Kind     string
+	Metadata VideoStream
+	URL      string
+}
+
+// PreviewStreamSource returns a credential-bearing camera source for internal
+// preview transport. Callers must never expose URL to remote clients.
+func (s *Service) PreviewStreamSource(id, streamKind string) (StreamSource, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	camera, ok := s.cameras[id]
+	if !ok {
+		return StreamSource{}, ErrCameraNotFound
+	}
+	if normalizeInitializationStatus(camera.InitializationStatus) == InitializationRequired {
+		return StreamSource{}, ErrDahuaInitializationRequired
+	}
+	streamPath, detail := "", ""
+	metadata := VideoStream{}
+	switch streamKind {
+	case "main":
+		streamPath, detail = camera.MainStreamPath, "Main stream"
+		metadata = camera.MainStream
+		if streamPath == "" {
+			streamPath = camera.LegacyRTSPPath
+		}
+	case "sub":
+		streamPath, detail = camera.SubStreamPath, "Sub stream"
+		metadata = camera.SubStream
+	default:
+		return StreamSource{}, ErrInvalidPreviewStream
+	}
+	source := rtspURLWithCredentials(streamPath, camera.Username, camera.Password)
+	if source == "" {
+		return StreamSource{}, fmt.Errorf("camera has no valid %s RTSP stream", streamKind)
+	}
+	name := camera.Name
+	if name == "" {
+		name = camera.Address
+	}
+	return StreamSource{ID: camera.ID + ":" + streamKind, Name: name, Detail: detail, Kind: streamKind, Metadata: metadata, URL: source}, nil
+}
+
+func (s *Service) MainStreamSource(id string) (StreamSource, error) {
+	return s.PreviewStreamSource(id, "main")
 }
 
 // StreamSources returns credential-bearing URLs used for MediaMTX configuration.
@@ -628,10 +697,24 @@ func (s *Service) StreamSources() []StreamSource {
 			name = camera.Address
 		}
 		if source := rtspURLWithCredentials(camera.MainStreamPath, camera.Username, camera.Password); source != "" {
-			result = append(result, StreamSource{ID: camera.ID + ":main", Name: name, Detail: "Main stream", URL: source})
+			result = append(result, StreamSource{
+				ID:       camera.ID + ":main",
+				Name:     name,
+				Detail:   "Main stream",
+				Kind:     "main",
+				Metadata: camera.MainStream,
+				URL:      source,
+			})
 		}
 		if source := rtspURLWithCredentials(camera.SubStreamPath, camera.Username, camera.Password); source != "" {
-			result = append(result, StreamSource{ID: camera.ID + ":sub", Name: name, Detail: "Sub stream", URL: source})
+			result = append(result, StreamSource{
+				ID:       camera.ID + ":sub",
+				Name:     name,
+				Detail:   "Sub stream",
+				Kind:     "sub",
+				Metadata: camera.SubStream,
+				URL:      source,
+			})
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
@@ -650,6 +733,15 @@ func rtspURLWithCredentials(value, username, password string) string {
 			parsed.User = url.User(username)
 		}
 	}
+	return parsed.String()
+}
+
+func rtspURLWithoutCredentials(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "rtsp" && parsed.Scheme != "rtsps") || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
 	return parsed.String()
 }
 

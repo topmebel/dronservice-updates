@@ -41,24 +41,24 @@ func TestServiceSavePreservesPassword(t *testing.T) {
 	}
 }
 
-func TestCameraViewExposesPasswordInRTSPPaths(t *testing.T) {
+func TestCameraViewRedactsPasswordAndRTSPCredentials(t *testing.T) {
 	saved := persistedCamera{
 		ID:             "camera",
 		Address:        "192.168.1.20",
 		Username:       "admin",
 		Password:       "p@ss word",
-		MainStreamPath: "rtsp://192.168.1.20/main",
-		SubStreamPath:  "rtsp://192.168.1.20/sub",
+		MainStreamPath: "rtsp://legacy:leaked@192.168.1.20/main",
+		SubStreamPath:  "rtsps://legacy:leaked@192.168.1.20/sub",
 	}
 
 	camera := cameraFromPersisted(saved, true)
-	if camera.Password != saved.Password {
-		t.Fatalf("Password = %q, want %q", camera.Password, saved.Password)
+	if !camera.HasPassword {
+		t.Fatal("HasPassword = false, want true")
 	}
-	if camera.MainStreamPath != "rtsp://admin:p%40ss%20word@192.168.1.20/main" {
+	if camera.MainStreamPath != "rtsp://192.168.1.20/main" {
 		t.Fatalf("MainStreamPath = %q", camera.MainStreamPath)
 	}
-	if camera.SubStreamPath != "rtsp://admin:p%40ss%20word@192.168.1.20/sub" {
+	if camera.SubStreamPath != "rtsps://192.168.1.20/sub" {
 		t.Fatalf("SubStreamPath = %q", camera.SubStreamPath)
 	}
 	data, err := json.Marshal(camera)
@@ -69,7 +69,10 @@ func TestCameraViewExposesPasswordInRTSPPaths(t *testing.T) {
 	if err := json.Unmarshal(data, &response); err != nil {
 		t.Fatalf("decode camera response: %v", err)
 	}
-	if response["password"] != saved.Password || response["mainStreamPath"] != camera.MainStreamPath {
+	if _, exists := response["password"]; exists {
+		t.Fatalf("camera response exposes password: %#v", response)
+	}
+	if response["hasPassword"] != true || response["mainStreamPath"] != camera.MainStreamPath || response["subStreamPath"] != camera.SubStreamPath {
 		t.Fatalf("camera response = %#v", response)
 	}
 	if _, exists := response["mainStreamUrl"]; exists {
@@ -100,6 +103,51 @@ func TestServiceExtractsCredentialsFromRTSPPaths(t *testing.T) {
 	}
 	if saved.MainStreamPath != "rtsp://192.168.1.20/main" || saved.SubStreamPath != "rtsp://192.168.1.20/sub" {
 		t.Fatalf("saved RTSP paths = %q, %q", saved.MainStreamPath, saved.SubStreamPath)
+	}
+}
+
+func TestServiceSaveRebuildsRTSPHostsFromCameraAddress(t *testing.T) {
+	service, err := NewService(t.TempDir(), DahuaDiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := SaveRequest{
+		ID: "camera", Name: "Camera", Address: "192.168.1.40", Manufacturer: "Dahua",
+		Username: "admin", Password: "secret",
+		MainStreamPath: "rtsp://admin:secret@192.168.1.20:8554/cam/realmonitor?channel=1&subtype=0",
+		SubStreamPath:  "rtsp://admin:secret@192.168.1.20:8554/cam/realmonitor?channel=1&subtype=1",
+	}
+	if err := service.Save(request); err != nil {
+		t.Fatal(err)
+	}
+
+	saved := service.cameras[request.ID]
+	if saved.MainStreamPath != "rtsp://192.168.1.40:8554/cam/realmonitor?channel=1&subtype=0" {
+		t.Fatalf("MainStreamPath = %q", saved.MainStreamPath)
+	}
+	if saved.SubStreamPath != "rtsp://192.168.1.40:8554/cam/realmonitor?channel=1&subtype=1" {
+		t.Fatalf("SubStreamPath = %q", saved.SubStreamPath)
+	}
+}
+
+func TestDiscoveryRebuildsRTSPHostsWhenCameraAddressChanges(t *testing.T) {
+	saved := persistedCamera{
+		MainStreamPath:       "rtsp://192.168.1.20:8554/custom/main?profile=1",
+		SubStreamPath:        "rtsps://192.168.1.20:8322/custom/sub?profile=2",
+		InitializationStatus: InitializationCompleted,
+	}
+	updated := updateGenericDiscoveredCamera(saved, "camera", DiscoveredDevice{
+		Vendor: "UNV", Manufacturer: "UNV", IP: net.ParseIP("192.168.1.40"),
+	}, time.Now())
+
+	if updated.MainStreamPath != "rtsp://192.168.1.40:8554/custom/main?profile=1" {
+		t.Fatalf("MainStreamPath = %q", updated.MainStreamPath)
+	}
+	if updated.SubStreamPath != "rtsps://192.168.1.40:8322/custom/sub?profile=2" {
+		t.Fatalf("SubStreamPath = %q", updated.SubStreamPath)
+	}
+	if updated.InitializationStatus != InitializationCompleted {
+		t.Fatalf("InitializationStatus = %q, want %q", updated.InitializationStatus, InitializationCompleted)
 	}
 }
 
@@ -175,7 +223,12 @@ func TestStreamSourcesOnlyReturnsUsedCamerasWithInternalCredentials(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.cameras["used"] = persistedCamera{ID: "used", Name: "Front", Use: true, Username: "admin", Password: "p@ss", MainStreamPath: "rtsp://192.168.1.20/main", SubStreamPath: "rtsp://192.168.1.20/sub"}
+	service.cameras["used"] = persistedCamera{
+		ID: "used", Name: "Front", Use: true, Username: "admin", Password: "p@ss",
+		MainStreamPath: "rtsp://192.168.1.20/main", SubStreamPath: "rtsp://192.168.1.20/sub",
+		MainStream: VideoStream{Resolution: "1920x1080", FPS: "25", BitrateKbps: 2048},
+		SubStream:  VideoStream{Resolution: "704x576", FPS: "15", BitrateKbps: 512},
+	}
 	service.cameras["unused"] = persistedCamera{ID: "unused", Name: "Back", Use: false, MainStreamPath: "rtsp://192.168.1.21/main"}
 
 	sources := service.StreamSources()
@@ -189,6 +242,89 @@ func TestStreamSourcesOnlyReturnsUsedCamerasWithInternalCredentials(t *testing.T
 		if source.Name != "Front" || (source.Detail != "Main stream" && source.Detail != "Sub stream") {
 			t.Fatalf("source display metadata = %+v", source)
 		}
+		switch source.Kind {
+		case "main":
+			if source.Metadata != (VideoStream{Resolution: "1920x1080", FPS: "25", BitrateKbps: 2048}) {
+				t.Fatalf("main source metadata = %+v", source.Metadata)
+			}
+		case "sub":
+			if source.Metadata != (VideoStream{Resolution: "704x576", FPS: "15", BitrateKbps: 512}) {
+				t.Fatalf("sub source metadata = %+v", source.Metadata)
+			}
+		default:
+			t.Fatalf("source kind = %q", source.Kind)
+		}
+	}
+}
+
+func TestPreviewStreamSource(t *testing.T) {
+	service, err := NewService(t.TempDir(), DahuaDiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.cameras["configured"] = persistedCamera{
+		ID: "configured", Name: "Front", Address: "192.168.1.20",
+		Username: "admin", Password: "p@ss word", MainStreamPath: "rtsp://192.168.1.20/main", SubStreamPath: "rtsp://192.168.1.20/sub",
+		InitializationStatus: InitializationCompleted,
+		MainStream:           VideoStream{Resolution: "1920x1080", FPS: "25", BitrateKbps: 2048},
+		SubStream:            VideoStream{Resolution: "704x576", FPS: "25", BitrateKbps: 512},
+	}
+	service.cameras["legacy"] = persistedCamera{
+		ID: "legacy", Address: "192.168.1.21", LegacyRTSPPath: "rtsp://192.168.1.21/legacy",
+	}
+	service.cameras["uninitialized"] = persistedCamera{
+		ID: "uninitialized", MainStreamPath: "rtsp://192.168.1.22/main",
+		InitializationStatus: InitializationRequired,
+	}
+	service.cameras["invalid"] = persistedCamera{ID: "invalid", MainStreamPath: "http://192.168.1.23/main"}
+
+	source, err := service.PreviewStreamSource("configured", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := StreamSource{
+		ID: "configured:main", Name: "Front", Detail: "Main stream", Kind: "main",
+		Metadata: VideoStream{Resolution: "1920x1080", FPS: "25", BitrateKbps: 2048},
+		URL:      "rtsp://admin:p%40ss%20word@192.168.1.20/main",
+	}
+	if source != want {
+		t.Fatalf("PreviewStreamSource(main) = %+v, want %+v", source, want)
+	}
+	sub, err := service.PreviewStreamSource("configured", "sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSub := StreamSource{
+		ID: "configured:sub", Name: "Front", Detail: "Sub stream", Kind: "sub",
+		Metadata: VideoStream{Resolution: "704x576", FPS: "25", BitrateKbps: 512},
+		URL:      "rtsp://admin:p%40ss%20word@192.168.1.20/sub",
+	}
+	if sub != wantSub {
+		t.Fatalf("PreviewStreamSource(sub) = %+v, want %+v", sub, wantSub)
+	}
+
+	legacy, err := service.PreviewStreamSource("legacy", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Name != "192.168.1.21" || legacy.URL != "rtsp://192.168.1.21/legacy" {
+		t.Fatalf("legacy PreviewStreamSource(main) = %+v", legacy)
+	}
+	if _, err := service.PreviewStreamSource("legacy", "sub"); err == nil {
+		t.Fatal("legacy PreviewStreamSource(sub) error = nil")
+	}
+
+	if _, err := service.PreviewStreamSource("missing", "main"); !errors.Is(err, ErrCameraNotFound) {
+		t.Fatalf("missing PreviewStreamSource() error = %v", err)
+	}
+	if _, err := service.PreviewStreamSource("uninitialized", "main"); !errors.Is(err, ErrDahuaInitializationRequired) {
+		t.Fatalf("uninitialized PreviewStreamSource() error = %v", err)
+	}
+	if _, err := service.PreviewStreamSource("invalid", "main"); err == nil {
+		t.Fatal("invalid PreviewStreamSource() error = nil")
+	}
+	if _, err := service.PreviewStreamSource("configured", "third"); !errors.Is(err, ErrInvalidPreviewStream) {
+		t.Fatalf("unsupported PreviewStreamSource() error = %v", err)
 	}
 }
 
@@ -196,6 +332,27 @@ func TestOldPersistedCameraHasUnknownInitializationStatus(t *testing.T) {
 	camera := cameraFromPersisted(persistedCamera{ID: "old", Address: "192.168.1.20"}, false)
 	if camera.InitializationStatus != InitializationUnknown {
 		t.Fatalf("initialization status = %q, want %q", camera.InitializationStatus, InitializationUnknown)
+	}
+}
+
+func TestInitializationAfterDiscovery(t *testing.T) {
+	tests := []struct {
+		name               string
+		previous, observed InitializationStatus
+		want               InitializationStatus
+	}{
+		{name: "confirmed remains initialized when discovery is unknown", previous: InitializationCompleted, observed: InitializationUnknown, want: InitializationCompleted},
+		{name: "uninitialized becomes unknown after inconclusive discovery", previous: InitializationRequired, observed: InitializationUnknown, want: InitializationUnknown},
+		{name: "explicit initialized replaces uninitialized", previous: InitializationRequired, observed: InitializationCompleted, want: InitializationCompleted},
+		{name: "explicit uninitialized replaces initialized", previous: InitializationCompleted, observed: InitializationRequired, want: InitializationRequired},
+		{name: "unknown remains unknown", previous: InitializationUnknown, observed: InitializationUnknown, want: InitializationUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := initializationAfterDiscovery(tt.previous, tt.observed); got != tt.want {
+				t.Fatalf("initializationAfterDiscovery(%q, %q) = %q, want %q", tt.previous, tt.observed, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -242,8 +399,10 @@ func TestServiceRefreshVideoStreamsPersistsDahuaParameters(t *testing.T) {
 		}
 		_, _ = w.Write([]byte("table.Encode[0].MainFormat[0].Video.resolution=1920x1080\n" +
 			"table.Encode[0].MainFormat[0].Video.FPS=25\n" +
+			"table.Encode[0].MainFormat[0].Video.BitRate=4096\n" +
 			"table.Encode[0].ExtraFormat[0].Video.resolution=640x480\n" +
-			"table.Encode[0].ExtraFormat[0].Video.FPS=15"))
+			"table.Encode[0].ExtraFormat[0].Video.FPS=15\n" +
+			"table.Encode[0].ExtraFormat[0].Video.BitRate=512"))
 	}))
 	defer server.Close()
 	serverURL, _ := url.Parse(server.URL)
@@ -255,7 +414,7 @@ func TestServiceRefreshVideoStreamsPersistsDahuaParameters(t *testing.T) {
 	service.cameras["camera"] = persistedCamera{
 		ID: "camera", Address: serverURL.Hostname(), HTTPPort: uint16Port(t, serverURL.Port()),
 		Manufacturer: "Dahua", Username: "admin", Password: "secret",
-		InitializationStatus: InitializationCompleted,
+		InitializationStatus: InitializationUnknown,
 	}
 	service.dahuaCGI.http = server.Client()
 
@@ -263,14 +422,17 @@ func TestServiceRefreshVideoStreamsPersistsDahuaParameters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if camera.MainStream.Resolution != "1920x1080" || camera.MainStream.FPS != "25" || camera.SubStream.Resolution != "640x480" || camera.SubStream.FPS != "15" {
+	if camera.MainStream != (VideoStream{Resolution: "1920x1080", FPS: "25", BitrateKbps: 4096}) || camera.SubStream != (VideoStream{Resolution: "640x480", FPS: "15", BitrateKbps: 512}) {
 		t.Fatalf("camera streams = %#v, %#v", camera.MainStream, camera.SubStream)
+	}
+	if camera.InitializationStatus != InitializationCompleted {
+		t.Fatalf("camera initialization status = %q, want %q", camera.InitializationStatus, InitializationCompleted)
 	}
 	reloaded, err := NewService(filepath.Dir(service.filePath), DahuaDiscoverOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reloaded.List()[0]; got.MainStream != camera.MainStream || got.SubStream != camera.SubStream {
-		t.Fatalf("reloaded streams = %#v, %#v", got.MainStream, got.SubStream)
+	if got := reloaded.List()[0]; got.MainStream != camera.MainStream || got.SubStream != camera.SubStream || got.InitializationStatus != InitializationCompleted {
+		t.Fatalf("reloaded camera = %#v", got)
 	}
 }

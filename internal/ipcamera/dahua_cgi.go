@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,10 +71,15 @@ func dahuaHTTPBase(address string, port uint16) string {
 	return base
 }
 
-var dahuaVideoSetting = regexp.MustCompile(`(?i)^(?:table\.)?Encode\[0\]\.(MainFormat|ExtraFormat)\[0\]\.Video\.(resolution|fps)$`)
+var dahuaVideoSetting = regexp.MustCompile(`(?i)^(?:table\.)?Encode\[0\]\.(MainFormat|ExtraFormat)\[0\]\.Video\.(resolution|width|height|fps|bitrate)$`)
 
 func parseDahuaVideoStreams(body string) (VideoStream, VideoStream) {
 	var mainStream, subStream VideoStream
+	type dimensions struct{ width, height string }
+	streamDimensions := map[*VideoStream]*dimensions{
+		&mainStream: {},
+		&subStream:  {},
+	}
 	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
@@ -90,8 +96,22 @@ func parseDahuaVideoStreams(body string) (VideoStream, VideoStream) {
 		switch strings.ToLower(match[2]) {
 		case "resolution":
 			stream.Resolution = strings.TrimSpace(value)
+		case "width":
+			streamDimensions[stream].width = strings.TrimSpace(value)
+		case "height":
+			streamDimensions[stream].height = strings.TrimSpace(value)
 		case "fps":
 			stream.FPS = strings.TrimSpace(value)
+		case "bitrate":
+			bitrate, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
+			if err == nil {
+				stream.BitrateKbps = uint32(bitrate)
+			}
+		}
+	}
+	for stream, dimensions := range streamDimensions {
+		if stream.Resolution == "" && dimensions.width != "" && dimensions.height != "" {
+			stream.Resolution = dimensions.width + "x" + dimensions.height
 		}
 	}
 	return mainStream, subStream

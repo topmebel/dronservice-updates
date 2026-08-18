@@ -41,18 +41,21 @@ func TestDahuaCGIChangeIPv4UsesDigestAndNetworkParameters(t *testing.T) {
 
 func TestParseDahuaVideoStreams(t *testing.T) {
 	body := strings.Join([]string{
-		"table.Encode[0].MainFormat[0].Video.resolution=2688x1520",
+		"table.Encode[0].MainFormat[0].Video.Width=2688",
+		"table.Encode[0].MainFormat[0].Video.Height=1520",
 		"table.Encode[0].MainFormat[0].Video.FPS=25",
+		"table.Encode[0].MainFormat[0].Video.BitRate=4096",
 		"Encode[0].ExtraFormat[0].Video.Resolution=704x576",
 		"Encode[0].ExtraFormat[0].Video.fps=15",
+		"Encode[0].ExtraFormat[0].Video.bitrate=512",
 		"table.Encode[1].MainFormat[0].Video.resolution=ignored",
 	}, "\r\n")
 
 	mainStream, subStream := parseDahuaVideoStreams(body)
-	if mainStream != (VideoStream{Resolution: "2688x1520", FPS: "25"}) {
+	if mainStream != (VideoStream{Resolution: "2688x1520", FPS: "25", BitrateKbps: 4096}) {
 		t.Fatalf("main stream = %#v", mainStream)
 	}
-	if subStream != (VideoStream{Resolution: "704x576", FPS: "15"}) {
+	if subStream != (VideoStream{Resolution: "704x576", FPS: "15", BitrateKbps: 512}) {
 		t.Fatalf("sub stream = %#v", subStream)
 	}
 }
@@ -69,8 +72,10 @@ func TestDahuaCGIVideoStreamsUsesDigestAndEncodeConfig(t *testing.T) {
 		}
 		_, _ = w.Write([]byte("table.Encode[0].MainFormat[0].Video.resolution=1920x1080\n" +
 			"table.Encode[0].MainFormat[0].Video.FPS=25\n" +
+			"table.Encode[0].MainFormat[0].Video.BitRate=2048\n" +
 			"table.Encode[0].ExtraFormat[0].Video.resolution=640x480\n" +
-			"table.Encode[0].ExtraFormat[0].Video.FPS=12"))
+			"table.Encode[0].ExtraFormat[0].Video.FPS=12\n" +
+			"table.Encode[0].ExtraFormat[0].Video.BitRate=384"))
 	}))
 	defer server.Close()
 	parsed, _ := url.Parse(server.URL)
@@ -79,7 +84,7 @@ func TestDahuaCGIVideoStreamsUsesDigestAndEncodeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mainStream.Resolution != "1920x1080" || mainStream.FPS != "25" || subStream.Resolution != "640x480" || subStream.FPS != "12" {
+	if mainStream.Resolution != "1920x1080" || mainStream.FPS != "25" || mainStream.BitrateKbps != 2048 || subStream.Resolution != "640x480" || subStream.FPS != "12" || subStream.BitrateKbps != 384 {
 		t.Fatalf("streams = %#v, %#v", mainStream, subStream)
 	}
 }

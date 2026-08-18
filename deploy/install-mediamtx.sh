@@ -26,6 +26,8 @@ if [ ! -e /usr/local/etc/mediamtx.yml ]; then
     'apiAddress: 127.0.0.1:9997' \
     'rtsp: yes' \
     'rtspAddress: :554' \
+    'hls: yes' \
+    'hlsAddress: :8888' \
     'moq: no' \
     'paths:' \
     '  all_others:' > /usr/local/etc/mediamtx.yml
