@@ -34,10 +34,28 @@ type Result struct {
 	DirectURL string
 }
 
+type Diagnostic struct {
+	PiIPs        []string `json:"piIPs"`
+	CameraIP     string   `json:"cameraIP"`
+	Interface    string   `json:"interface,omitempty"`
+	Route        string   `json:"route"`
+	ConnectError string   `json:"connectError,omitempty"`
+}
+
+type ConnectivityError struct {
+	Diagnostic Diagnostic
+	Cause      error
+}
+
+func (e *ConnectivityError) Error() string { return fmt.Sprintf("camera connectivity: %v", e.Cause) }
+func (e *ConnectivityError) Unwrap() error { return e.Cause }
+
 type Config struct {
 	ListenAddress string
 	TTL           time.Duration
 	LocalNetworks func() ([]*net.IPNet, error)
+	DialContext   func(context.Context, string, string) (net.Conn, error)
+	RouteLookup   func(net.IP) (string, string, error)
 	allowLoopback bool
 }
 
@@ -66,6 +84,12 @@ func NewManager(config Config) *Manager {
 	if config.LocalNetworks == nil {
 		config.LocalNetworks = interfaceNetworks
 	}
+	if config.DialContext == nil {
+		config.DialContext = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
+	}
+	if config.RouteLookup == nil {
+		config.RouteLookup = routeLookup
+	}
 	return &Manager{config: config, sessions: make(map[string]*session)}
 }
 
@@ -89,6 +113,25 @@ func (m *Manager) Start(target Target) (Result, error) {
 			return Result{Mode: "direct", DirectURL: targetURL.String() + "/"}, nil
 		}
 	}
+	diagnostic := Diagnostic{CameraIP: ip.String(), Route: "unavailable"}
+	for _, network := range networks {
+		diagnostic.PiIPs = append(diagnostic.PiIPs, network.IP.String())
+	}
+	localIP, interfaceName, routeErr := m.config.RouteLookup(ip)
+	if routeErr != nil {
+		diagnostic.ConnectError = safeNetworkError(routeErr)
+		return Result{}, &ConnectivityError{Diagnostic: diagnostic, Cause: routeErr}
+	}
+	diagnostic.Route = "via " + localIP
+	diagnostic.Interface = interfaceName
+	connectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	connection, connectErr := m.config.DialContext(connectCtx, "tcp", targetURL.Host)
+	cancel()
+	if connectErr != nil {
+		diagnostic.ConnectError = safeNetworkError(connectErr)
+		return Result{}, &ConnectivityError{Diagnostic: diagnostic, Cause: connectErr}
+	}
+	_ = connection.Close()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -143,6 +186,45 @@ func (m *Manager) Start(target Target) (Result, error) {
 		m.remove(target.ID, current)
 	}()
 	return Result{Mode: "proxy", Address: listener.Addr().String(), ExpiresAt: expiresAt}, nil
+}
+
+func safeNetworkError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(err.Error())
+	for _, known := range []string{"no route to host", "network is unreachable", "connection refused", "i/o timeout", "operation timed out"} {
+		if strings.Contains(message, known) {
+			return known
+		}
+	}
+	return "TCP connection failed"
+}
+
+func routeLookup(target net.IP) (string, string, error) {
+	connection, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: target, Port: 9})
+	if err != nil {
+		return "", "", err
+	}
+	localIP := connection.LocalAddr().(*net.UDPAddr).IP
+	_ = connection.Close()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return localIP.String(), "", err
+	}
+	for _, networkInterface := range interfaces {
+		addresses, addressErr := networkInterface.Addrs()
+		if addressErr != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, parseErr := net.ParseCIDR(address.String())
+			if parseErr == nil && ip.Equal(localIP) {
+				return localIP.String(), networkInterface.Name, nil
+			}
+		}
+	}
+	return localIP.String(), "", nil
 }
 
 func (m *Manager) stop(id string, expected *session, expiresAt time.Time) {

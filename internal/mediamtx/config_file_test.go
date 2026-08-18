@@ -57,4 +57,33 @@ func TestConfigFileManualWriteRequiresPathsSection(t *testing.T) {
 	if got != want {
 		t.Fatalf("Read() = %q, want %q", got, want)
 	}
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(backup) != "paths:\n  all_others:\n" {
+		t.Fatalf("backup = %q, want previous configuration", backup)
+	}
+}
+
+func TestConfigFileDoesNotReplaceActiveFileWhenBackupFails(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "mediamtx.yml")
+	original := "paths:\n  all_others:\n"
+	if err := os.WriteFile(path, []byte(original), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".bak", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewConfigFile(path).Write("paths:\n  camera:\n"); err == nil {
+		t.Fatal("Write() succeeded when backup could not be replaced")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("active file changed after backup failure: %q", got)
+	}
 }

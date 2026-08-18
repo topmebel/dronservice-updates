@@ -1,5 +1,38 @@
 # DronService
 
+DronService is a Go control service for MediaMTX, FFmpeg, V4L2 and IP cameras
+on Raspberry Pi 5/Linux ARM64. It runs as the unprivileged `admin` user and is
+intended only for a trusted LAN.
+
+## Network and ports
+
+```text
+Browser --HTTP :80--> DronService --localhost :9997--> MediaMTX API
+Browser --HLS :8888-------------------------------> MediaMTX
+RTSP clients --RTSP :554--------------------------> MediaMTX
+DronService --HTTP/RTSP--> saved or discovered cameras
+```
+
+MediaMTX API must remain bound to `127.0.0.1:9997`. Do not forward port 80,
+8888, 554 or temporary camera-proxy ports from the public internet.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEDIAMTX_URL` | `http://127.0.0.1:9997` | MediaMTX Control API |
+| `MEDIAMTX_USER` / `MEDIAMTX_PASSWORD` | empty | server-side Control API credentials |
+| `MEDIAMTX_CONFIG_PATH` | `/usr/local/etc/mediamtx/mediamtx.yml` | active configuration file |
+| `DRONSERVICE_ADDR` | `:80` | HTTP listen address |
+| `DRONSERVICE_DATA_DIR` | `/var/lib/dronservice` | persistent camera/update state |
+| `DRONSERVICE_UPDATE_REPOSITORY` | empty | public `owner/repository` for releases |
+| `DRONSERVICE_CAMERA_PROXY_TTL` | `15m` | camera web proxy lifetime |
+| `DRONSERVICE_CAMERA_PROXY_ADDR` | `:0` | temporary proxy listener |
+| `DRONSERVICE_STREAM_PREVIEW_TTL` | `10m` | HLS preview lifetime |
+| `DRONSERVICE_HLS_PUBLIC_URL` | detected Pi IPv4 on port 8888 | browser HLS base URL |
+
+Secrets belong in a root-managed environment file and must never be committed.
+
 ## Временный доступ к web-интерфейсу IP-камеры
 
 На странице `/ip-cameras` кнопка доступа открывает камеру напрямую, если её IPv4-адрес входит в одну из локальных подсетей Raspberry Pi. Для камеры из другой подсети DronService запускает отдельный временный reverse proxy и возвращает браузеру адрес Raspberry Pi с временным портом.
@@ -125,13 +158,18 @@ DRONSERVICE_UPDATE_PUBLIC_KEY=/usr/local/etc/dronservice-release.pub
 
 The unprivileged DronService process writes `/var/lib/dronservice/update-dronservice.request`. The systemd path unit starts the root-owned oneshot updater, which:
 
-1. downloads the binary, checksum and signature from the requested GitHub tag;
-2. verifies SHA-256 and the RSA signature;
+1. downloads the binary, deployment manifest, units/scripts, checksums and signatures from the requested GitHub tag;
+2. verifies the signed checksum list, SHA-256 of every asset and the binary RSA signature;
 3. verifies that the signed binary reports the requested version;
 4. installs it under `/usr/local/lib/dronservice/releases/vX.Y.Z`;
 5. atomically changes the `current` symlink;
 6. restarts DronService and checks `/api/health` and `/api/version`;
-7. restores the previous release if validation or health checks fail.
+7. applies deployment schema migrations and reloads systemd before activation;
+8. restores the previous binary and deployment files if migration, validation or health checks fail.
+
+The release manifest is `deployment-manifest.json`. Its `schemaVersion` is
+validated before any deployment file is installed, preventing a newer updater
+layout from being applied by code that does not understand it.
 
 There is deliberately no `dronservice-update.timer`.
 
@@ -143,7 +181,34 @@ Copy the release binary and the `deploy` directory to the target once, then run:
 sudo ./deploy/install-dronservice.sh ./dronservice-linux-arm64 owner/repository
 ```
 
-The installer creates the release layout, installs the public verification key and systemd units, enables the manual update path, and verifies the local health endpoint. Device configuration remains under `/var/lib/dronservice` and is not included in release artifacts.
+The host must be ARM64 and contain the `admin` user. The installer creates all
+sandbox writable paths before starting a unit, migrates the legacy MediaMTX
+configuration, installs the public verification key and systemd units, enables
+manual update/install path units, and verifies both `/api/health` and the exact
+`/api/version`. Device configuration remains under `/var/lib/dronservice` and
+is not included in release artifacts.
+
+Install MediaMTX from its page in DronService, or place a strict semantic
+version in `/var/lib/dronservice/install-mediamtx.request`; the root oneshot
+unit downloads and checksum-verifies the ARM64 archive. Install FFmpeg/V4L2
+runtime once with `sudo ./deploy/install-video-runtime.sh`.
+
+## Rollback and troubleshooting
+
+The updater rolls back the active release symlink and backed-up deployment
+files automatically when migration, restart, health or version checks fail.
+For an operator rollback, repoint `/usr/local/lib/dronservice/current` to a
+previous directory under `/usr/local/lib/dronservice/releases/`, update the
+`/usr/local/bin/dronservice` symlink and restart `dronservice.service`.
+
+- `systemctl status dronservice mediamtx` shows service failures.
+- `journalctl -u dronservice -u mediamtx -n 200` shows recent logs without stored credentials.
+- `curl http://127.0.0.1/api/health` checks DronService locally.
+- `curl http://127.0.0.1:9997/v3/paths/list` checks MediaMTX locally.
+- A `no route to host` camera error requires an OS route/VLAN/interface fix;
+  reverse proxy does not create a network route.
+- If MediaMTX config saving is denied after upgrading an old installation,
+  rerun the current installers so `/usr/local/etc/mediamtx` is owned by `admin`.
 
 ## Quality checks
 

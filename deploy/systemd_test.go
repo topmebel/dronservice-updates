@@ -66,6 +66,12 @@ func TestApplicationUpdaterVerifiesAndRollsBackRelease(t *testing.T) {
 		`while [ "$attempt" -le 10 ]`,
 		`sha256sum --check --status`,
 		`openssl dgst -sha256 -verify`,
+		`checksums.sha256.sig`,
+		`deployment-manifest.json`,
+		`unsupported-deployment-schema`,
+		`deployment-checksum-mismatch`,
+		`systemctl daemon-reload`,
+		`deployment-backup`,
 		`--version`,
 		`systemctl restart dronservice.service`,
 		`rollback`,
@@ -75,6 +81,26 @@ func TestApplicationUpdaterVerifiesAndRollsBackRelease(t *testing.T) {
 		if !strings.Contains(script, fragment) {
 			t.Errorf("update-dronservice.sh does not contain %q", fragment)
 		}
+	}
+}
+
+func TestInstallerCreatesWritablePathsBeforeStartingService(t *testing.T) {
+	script := readDeploymentFile(t, "install-dronservice.sh")
+	createState := strings.Index(script, "install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx")
+	startService := strings.Index(script, "systemctl restart dronservice.service")
+	if createState < 0 || startService < 0 || createState >= startService {
+		t.Fatal("installer must create service directories before starting DronService")
+	}
+	for _, required := range []string{"aarch64|arm64", "id admin", "dronservice-mediamtx-install.path", "/api/version"} {
+		if !strings.Contains(script, required) {
+			t.Errorf("installer lacks production invariant %q", required)
+		}
+	}
+	mediaInstaller := readDeploymentFile(t, "install-mediamtx.sh")
+	createConfig := strings.Index(mediaInstaller, "install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx")
+	startMediaMTX := strings.Index(mediaInstaller, "systemctl enable --now mediamtx.service")
+	if createConfig < 0 || startMediaMTX < 0 || createConfig >= startMediaMTX {
+		t.Fatal("MediaMTX installer must create ReadWritePaths before starting its unit")
 	}
 }
 

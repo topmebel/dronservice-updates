@@ -232,6 +232,9 @@ func yamlScalar(value string) string {
 }
 
 func writeConfigFile(path, content string) error {
+	if err := backupConfigFile(path); err != nil {
+		return err
+	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".mediamtx-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary MediaMTX configuration: %w", err)
@@ -255,6 +258,46 @@ func writeConfigFile(path, content string) error {
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("replace MediaMTX configuration: %w", err)
+	}
+	return nil
+}
+
+func backupConfigFile(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read MediaMTX configuration for backup: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat MediaMTX configuration for backup: %w", err)
+	}
+	backupPath := path + ".bak"
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".mediamtx-backup-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary MediaMTX backup: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(info.Mode().Perm()); err != nil {
+		temporary.Close()
+		return fmt.Errorf("set MediaMTX backup permissions: %w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write MediaMTX backup: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync MediaMTX backup: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close MediaMTX backup: %w", err)
+	}
+	if err := os.Rename(temporaryPath, backupPath); err != nil {
+		return fmt.Errorf("replace MediaMTX backup: %w", err)
 	}
 	return nil
 }

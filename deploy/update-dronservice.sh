@@ -7,9 +7,13 @@ lock_dir=/run/dronservice-update/lock
 asset=dronservice-linux-arm64
 checksums=checksums.sha256
 signature=dronservice-linux-arm64.sig
+checksums_signature=checksums.sha256.sig
+manifest=deployment-manifest.json
+deployment_assets="install-dronservice.sh update-dronservice.sh install-mediamtx.sh install-video-runtime.sh dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path mediamtx.service mediamtx.yml dronservice-release.pub"
 work_dir=
 previous_target=
 switched=false
+deployment_changed=false
 
 write_status() {
 	state=$1
@@ -29,16 +33,36 @@ cleanup() {
 }
 
 rollback() {
-	[ "$switched" = true ] || return 0
-	previous_release=$(dirname "$previous_target")
-	rollback_link=/usr/local/lib/dronservice/.current-rollback
-	bin_link=/usr/local/bin/.dronservice-rollback
-	rm -f "$rollback_link" "$bin_link"
-	ln -s "$previous_release" "$rollback_link" || return 1
-	mv -Tf "$rollback_link" /usr/local/lib/dronservice/current || return 1
-	ln -s /usr/local/lib/dronservice/current/dronservice "$bin_link" || return 1
-	mv -Tf "$bin_link" /usr/local/bin/dronservice || return 1
-	systemctl restart dronservice.service
+	if [ "$deployment_changed" = true ]; then
+		for entry in \
+			"update-dronservice.sh:/usr/local/libexec/dronservice-update" \
+			"install-mediamtx.sh:/usr/local/libexec/dronservice-install-mediamtx" \
+			"dronservice.service:/etc/systemd/system/dronservice.service" \
+			"dronservice-update.service:/etc/systemd/system/dronservice-update.service" \
+			"dronservice-update.path:/etc/systemd/system/dronservice-update.path" \
+			"dronservice-mediamtx-install.service:/etc/systemd/system/dronservice-mediamtx-install.service" \
+			"dronservice-mediamtx-install.path:/etc/systemd/system/dronservice-mediamtx-install.path" \
+			"mediamtx.service:/etc/systemd/system/mediamtx.service"; do
+			name=${entry%%:*}; destination=${entry#*:}
+			if [ -e "${work_dir}/deployment-backup/${name}" ]; then
+				cp -p "${work_dir}/deployment-backup/${name}" "$destination" || return 1
+			elif [ -e "${work_dir}/deployment-backup/${name}.absent" ]; then
+				rm -f "$destination" || return 1
+			fi
+		done
+		systemctl daemon-reload || return 1
+	fi
+	if [ "$switched" = true ]; then
+		previous_release=$(dirname "$previous_target")
+		rollback_link=/usr/local/lib/dronservice/.current-rollback
+		bin_link=/usr/local/bin/.dronservice-rollback
+		rm -f "$rollback_link" "$bin_link"
+		ln -s "$previous_release" "$rollback_link" || return 1
+		mv -Tf "$rollback_link" /usr/local/lib/dronservice/current || return 1
+		ln -s /usr/local/lib/dronservice/current/dronservice "$bin_link" || return 1
+		mv -Tf "$bin_link" /usr/local/bin/dronservice || return 1
+	fi
+	systemctl restart dronservice.service || true
 }
 
 fail_update() {
@@ -80,16 +104,27 @@ done
 work_dir=$(mktemp -d) || fail_update temporary-directory-failed
 base_url="https://github.com/${DRONSERVICE_UPDATE_REPOSITORY}/releases/download/${version}"
 write_status downloading "$version" downloading || fail_update status-write-failed
-for file in "$asset" "$checksums" "$signature"; do
+for file in "$checksums" "$checksums_signature"; do
 	curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
 		"${base_url}/${file}" --output "${work_dir}/${file}" || fail_update download-failed
 done
 
 write_status verifying "$version" verifying || fail_update status-write-failed
+openssl dgst -sha256 -verify "$public_key" -signature "${work_dir}/${checksums_signature}" "${work_dir}/${checksums}" >/dev/null 2>&1 || fail_update checksums-signature-mismatch
+for file in "$asset" "$signature" "$manifest" $deployment_assets; do
+	curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+		"${base_url}/${file}" --output "${work_dir}/${file}" || fail_update download-failed
+done
 expected_checksum=$(awk -v name="$asset" '$2 == name || $2 == "*" name {print $1}' "${work_dir}/${checksums}")
 printf '%s\n' "$expected_checksum" | grep -Eq '^[0-9a-fA-F]{64}$' || fail_update invalid-checksum
 printf '%s  %s\n' "$expected_checksum" "${work_dir}/${asset}" | sha256sum --check --status || fail_update checksum-mismatch
 openssl dgst -sha256 -verify "$public_key" -signature "${work_dir}/${signature}" "${work_dir}/${asset}" >/dev/null 2>&1 || fail_update signature-mismatch
+for file in "$manifest" $deployment_assets; do
+	expected_asset_checksum=$(awk -v name="$file" '$2 == name || $2 == "*" name {print $1}' "${work_dir}/${checksums}")
+	printf '%s\n' "$expected_asset_checksum" | grep -Eq '^[0-9a-fA-F]{64}$' || fail_update invalid-deployment-checksum
+	printf '%s  %s\n' "$expected_asset_checksum" "${work_dir}/${file}" | sha256sum --check --status || fail_update deployment-checksum-mismatch
+done
+grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*1([,[:space:]}]|$)' "${work_dir}/${manifest}" || fail_update unsupported-deployment-schema
 chmod 0755 "${work_dir}/${asset}" || fail_update chmod-failed
 downloaded_version=$("${work_dir}/${asset}" --version 2>/dev/null || true)
 [ "$downloaded_version" = "$version" ] || fail_update binary-version-mismatch
@@ -108,6 +143,32 @@ if [ -e "${release_dir}/dronservice" ]; then
 else
 	install -o root -g root -m 0755 "${work_dir}/${asset}" "${release_dir}/dronservice" || fail_update install-binary-failed
 fi
+
+install -d -o root -g root -m 0755 "${work_dir}/deployment-backup" /usr/local/libexec /etc/systemd/system /usr/local/etc || fail_update create-deployment-directory-failed
+install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx || fail_update create-mediamtx-directory-failed
+for entry in \
+	"update-dronservice.sh:/usr/local/libexec/dronservice-update:0755" \
+	"install-mediamtx.sh:/usr/local/libexec/dronservice-install-mediamtx:0755" \
+	"dronservice.service:/etc/systemd/system/dronservice.service:0644" \
+	"dronservice-update.service:/etc/systemd/system/dronservice-update.service:0644" \
+	"dronservice-update.path:/etc/systemd/system/dronservice-update.path:0644" \
+	"dronservice-mediamtx-install.service:/etc/systemd/system/dronservice-mediamtx-install.service:0644" \
+	"dronservice-mediamtx-install.path:/etc/systemd/system/dronservice-mediamtx-install.path:0644" \
+	"mediamtx.service:/etc/systemd/system/mediamtx.service:0644"; do
+	name=${entry%%:*}; remainder=${entry#*:}; destination=${remainder%:*}; mode=${entry##*:}
+	if [ -e "$destination" ]; then cp -p "$destination" "${work_dir}/deployment-backup/${name}" || fail_update backup-deployment-failed; else : > "${work_dir}/deployment-backup/${name}.absent" || fail_update backup-deployment-failed; fi
+done
+deployment_changed=true
+install -o root -g root -m 0755 "${work_dir}/update-dronservice.sh" /usr/local/libexec/dronservice-update || fail_update install-deployment-failed
+install -o root -g root -m 0755 "${work_dir}/install-mediamtx.sh" /usr/local/libexec/dronservice-install-mediamtx || fail_update install-deployment-failed
+for name in dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path mediamtx.service; do
+	install -o root -g root -m 0644 "${work_dir}/${name}" "/etc/systemd/system/${name}" || fail_update install-deployment-failed
+done
+if [ ! -e /usr/local/etc/mediamtx/mediamtx.yml ]; then
+	if [ -e /usr/local/etc/mediamtx.yml ]; then install -o admin -g admin -m 0660 /usr/local/etc/mediamtx.yml /usr/local/etc/mediamtx/mediamtx.yml || fail_update migrate-mediamtx-config-failed; else install -o admin -g admin -m 0660 "${work_dir}/mediamtx.yml" /usr/local/etc/mediamtx/mediamtx.yml || fail_update install-mediamtx-config-failed; fi
+fi
+systemctl daemon-reload || fail_update daemon-reload-failed
+systemctl enable dronservice-update.path dronservice-mediamtx-install.path >/dev/null 2>&1 || fail_update enable-deployment-units-failed
 
 next_current=/usr/local/lib/dronservice/.current-next
 next_binary=/usr/local/bin/.dronservice-next

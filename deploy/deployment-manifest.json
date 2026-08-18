@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    "dronservice-linux-arm64",
+    "install-dronservice.sh",
+    "update-dronservice.sh",
+    "install-mediamtx.sh",
+    "install-video-runtime.sh",
+    "dronservice.service",
+    "dronservice-update.service",
+    "dronservice-update.path",
+    "dronservice-mediamtx-install.service",
+    "dronservice-mediamtx-install.path",
+    "mediamtx.service",
+    "mediamtx.yml",
+    "dronservice-release.pub"
+  ]
+}

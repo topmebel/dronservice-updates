@@ -2,6 +2,7 @@ package cameraproxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -34,6 +35,12 @@ func TestStartProxiesWhenBrowserCannotReachCameraNetwork(t *testing.T) {
 			_, browserNetwork, _ := net.ParseCIDR("192.168.1.0/24")
 			return []*net.IPNet{cameraNetwork, browserNetwork}, nil
 		},
+		RouteLookup: func(net.IP) (string, string, error) { return "192.168.50.1", "eth0", nil },
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			_ = server.Close()
+			return client, nil
+		},
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 
@@ -43,6 +50,33 @@ func TestStartProxiesWhenBrowserCannotReachCameraNetwork(t *testing.T) {
 	}
 	if result.Mode != "proxy" || result.Address == "" {
 		t.Fatalf("result = %+v, want proxy", result)
+	}
+}
+
+func TestStartReturnsConnectivityDiagnosticBeforeListening(t *testing.T) {
+	wantErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}
+	manager := NewManager(Config{
+		ListenAddress: "127.0.0.1:0",
+		LocalNetworks: func() ([]*net.IPNet, error) {
+			_, network, _ := net.ParseCIDR("192.168.1.0/24")
+			return []*net.IPNet{network}, nil
+		},
+		RouteLookup: func(net.IP) (string, string, error) { return "192.168.1.147", "eth0", nil },
+		DialContext: func(context.Context, string, string) (net.Conn, error) { return nil, wantErr },
+	})
+	_, err := manager.Start(Target{ID: "camera", Address: "192.168.50.20", ClientAddress: "192.168.1.50"})
+	var connectivityErr *ConnectivityError
+	if !errors.As(err, &connectivityErr) {
+		t.Fatalf("Start() error = %v, want ConnectivityError", err)
+	}
+	if connectivityErr.Diagnostic.CameraIP != "192.168.50.20" || connectivityErr.Diagnostic.Interface != "eth0" || connectivityErr.Diagnostic.Route != "via 192.168.1.147" || connectivityErr.Diagnostic.ConnectError != "no route to host" {
+		t.Fatalf("diagnostic = %+v", connectivityErr.Diagnostic)
+	}
+	manager.mu.Lock()
+	sessions := len(manager.sessions)
+	manager.mu.Unlock()
+	if sessions != 0 {
+		t.Fatalf("sessions = %d, want zero after failed preflight", sessions)
 	}
 }
 

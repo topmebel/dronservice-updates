@@ -3,11 +3,37 @@ package deploy
 import (
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"strings"
 	"testing"
 )
+
+type deploymentManifest struct {
+	SchemaVersion int      `json:"schemaVersion"`
+	Assets        []string `json:"assets"`
+}
+
+func TestDeploymentManifestIsVersionedAndComplete(t *testing.T) {
+	data, err := os.ReadFile("deployment-manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest deploymentManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion < 1 {
+		t.Fatalf("schemaVersion = %d, want positive version", manifest.SchemaVersion)
+	}
+	joined := strings.Join(manifest.Assets, "\n")
+	for _, required := range []string{"dronservice-linux-arm64", "install-mediamtx.sh", "mediamtx.service", "dronservice.service", "dronservice-release.pub"} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("deployment manifest lacks %q", required)
+		}
+	}
+}
 
 func TestReleasePublicKeyIsRSA3072(t *testing.T) {
 	data, err := os.ReadFile("dronservice-release.pub")
