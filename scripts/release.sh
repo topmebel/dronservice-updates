@@ -101,8 +101,8 @@ notes_file="$workdir/release-notes.md"
 cat > "$notes_file" <<EOF
 ## DronService ${version}
 
-- Страница MediaMTX переведена на карточный layout, как у камер.
-- RTSP-пути, предпросмотр и редактирование стримов работают из карточек.
+- Без изменений в приложении относительно v0.7.1.
+- Исправлен scripts/release.sh: GitHub CLI находится в WSL через gh.exe на Windows.
 EOF
 
 "$gh_cmd" release create "$version" \
