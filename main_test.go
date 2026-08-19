@@ -284,8 +284,8 @@ func TestStreamsHeadingPlacesAddButtonOnTheRight(t *testing.T) {
 		t.Fatal("add stream button is not in the MediaMTX heading")
 	}
 	for _, fragment := range []string{`.page-heading{display:flex`, `justify-content:space-between`} {
-		if !strings.Contains(streamsPageHTML, fragment) {
-			t.Errorf("streams page does not contain %q", fragment)
+		if !strings.Contains(applicationStyle, fragment) {
+			t.Errorf("shared theme does not contain %q", fragment)
 		}
 	}
 }
@@ -315,24 +315,23 @@ func TestStreamsPageShowsExistingPathInHLSPreviewModal(t *testing.T) {
 
 func TestStreamsPageShowsStreamSettingsInSecondRow(t *testing.T) {
 	required := []string{
-		`<tr class="stream-config-row" data-name="{{.Name}}" data-source-id="{{.SourceID}}">`,
-		`<tr class="stream-details-row" data-stream-details="{{.Name}}"><td colspan="4">`,
-		`<strong>Разрешение:</strong><span data-stream-resolution>{{if .Resolution}}{{.Resolution}}{{else}}—{{end}}</span>`,
-		`<strong>FPS:</strong><span data-stream-fps>{{if .FPS}}{{.FPS}}{{else}}—{{end}}</span>`,
-		`<strong>Битрейт:</strong><span data-stream-bitrate>{{if .BitrateKbps}}{{.BitrateKbps}} кбит/с{{else if eq .SourceType "analog"}}Динамический (CRF 23){{else}}—{{end}}</span>`,
+		`<div class="camera-grid" id="streams-body">`,
+		`<article class="camera-card stream-card" data-name="{{.Name}}" data-source-id="{{.SourceID}}">`,
+		`<span data-stream-resolution>{{if .Resolution}}{{.Resolution}}{{else}}—{{end}}</span>`,
+		`<span data-stream-fps>{{if .FPS}}{{.FPS}}{{else}}—{{end}}</span>`,
+		`<span data-stream-bitrate>{{if .BitrateKbps}}{{.BitrateKbps}} кбит/с{{else if eq .SourceType "analog"}}Динамический (CRF 23){{else}}—{{end}}</span>`,
 		`data-stream-bitrate]')?.textContent?.trim()||'—'`,
-		`<button type="button" class="preview-button" data-stream-preview="{{.Name}}"`,
-		`.stream-config-row td{border-bottom:0!important}`,
-		`.stream-details-row:hover{background:#172033!important}`,
+		`<button type="button" class="btn-secondary-sm preview-button" data-stream-preview="{{.Name}}"`,
 		`document.querySelector('#streams-body').replaceChildren(...next.children)`,
-		`const row=event.target.closest('tr[data-name]')`,
+		`const card=event.target.closest('.stream-card[data-name]')`,
+		`button.closest('.stream-card')`,
 	}
 	if strings.Contains(streamsPageHTML, `<th class="preview-cell">Просмотр</th>`) {
 		t.Fatal("MediaMTX preview still has a separate table column")
 	}
 	for _, fragment := range required {
 		if !strings.Contains(streamsPageHTML, fragment) {
-			t.Errorf("streams metadata table does not contain %q", fragment)
+			t.Errorf("streams metadata cards do not contain %q", fragment)
 		}
 	}
 }
@@ -363,18 +362,16 @@ func TestStreamsPageRendersKnownDynamicAndUnknownSettings(t *testing.T) {
 	}
 	rendered := output.String()
 	for _, fragment := range []string{
-		`<strong>Разрешение:</strong><span data-stream-resolution>1920x1080</span>`,
-		`<strong>FPS:</strong><span data-stream-fps>25</span>`,
-		`<strong>Битрейт:</strong><span data-stream-bitrate>4096 кбит/с</span>`,
-		`<strong>Битрейт:</strong><span data-stream-bitrate>Динамический (CRF 23)</span>`,
-		`<strong>Разрешение:</strong><span data-stream-resolution>—</span></span><span class="stream-detail"><strong>FPS:</strong><span data-stream-fps>—</span></span><span class="stream-detail"><strong>Битрейт:</strong><span data-stream-bitrate>—</span>`,
+		`<strong>Поток</strong><span><span data-stream-resolution>1920x1080</span> · <span data-stream-fps>25</span> FPS · <span data-stream-bitrate>4096 кбит/с</span>`,
+		`<strong>Поток</strong><span><span data-stream-resolution>720x576</span> · <span data-stream-fps>25</span> FPS · <span data-stream-bitrate>Динамический (CRF 23)</span>`,
+		`<strong>Поток</strong><span><span data-stream-resolution>—</span> · <span data-stream-fps>—</span> FPS · <span data-stream-bitrate>—</span>`,
 	} {
 		if !strings.Contains(rendered, fragment) {
 			t.Errorf("rendered streams metadata does not contain %q", fragment)
 		}
 	}
-	if got := strings.Count(rendered, `class="stream-details-row"`); got != len(configs) {
-		t.Fatalf("rendered streams details rows = %d, want %d", got, len(configs))
+	if got := strings.Count(rendered, `class="camera-card stream-card"`); got != len(configs) {
+		t.Fatalf("rendered stream cards = %d, want %d", got, len(configs))
 	}
 }
 
