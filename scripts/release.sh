@@ -106,6 +106,7 @@ cat > "$notes_file" <<EOF
 - Исправлено обновление на хостах без пользователя admin (например rovertech).
 - Локальные настройки (порт, HLS URL, пользователь systemd) сохраняются в dronservice.env и drop-in.
 - Health-check updater учитывает DRONSERVICE_ADDR; в UI показывается текст ошибки обновления.
+- Исправлен sandbox updater: запись в /usr/local/libexec и systemd units.
 EOF
 
 "$gh_cmd" release create "$version" \

@@ -50,6 +50,7 @@ func TestApplicationUpdateIsManualAndRunsInSeparateService(t *testing.T) {
 		"RuntimeDirectory=dronservice-update",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
+		"ReadWritePaths=/usr/local/lib/dronservice /usr/local/bin /usr/local/libexec /etc/systemd/system /usr/local/etc /etc/dronservice /var/lib/dronservice /run/dronservice-update",
 	} {
 		if !strings.Contains(serviceUnit, setting) {
 			t.Errorf("dronservice-update.service does not contain %q", setting)

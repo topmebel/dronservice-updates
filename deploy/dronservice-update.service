@@ -15,4 +15,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/usr/local/lib/dronservice /usr/local/bin /var/lib/dronservice /run/dronservice-update
+ReadWritePaths=/usr/local/lib/dronservice /usr/local/bin /usr/local/libexec /etc/systemd/system /usr/local/etc /etc/dronservice /var/lib/dronservice /run/dronservice-update
