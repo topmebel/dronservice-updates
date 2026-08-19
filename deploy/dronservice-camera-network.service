@@ -5,10 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-Group=root
+User=admin
+Group=admin
 ExecStart=/usr/local/libexec/dronservice-camera-network-helper
 Environment=DRONSERVICE_DATA_DIR=/var/lib/dronservice
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 EnvironmentFile=-/etc/dronservice/camera-network.conf
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
@@ -20,3 +21,4 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK AF_PACKET
 ReadWritePaths=/var/lib/dronservice
+UMask=0077

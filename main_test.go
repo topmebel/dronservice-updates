@@ -112,12 +112,18 @@ func TestIPCamerasDialogPlacesCredentialsInOneRowWithoutStreamMetadata(t *testin
 	required := []string{
 		`<div class="credentials-fields"><div class="credential-field"><label for="username">Логин</label><input id="username"`,
 		`</div><div class="credential-field"><label for="password">Пароль</label><input id="password"`,
-		`.camera-name-row,.network-fields,.credentials-fields{display:flex`,
-		`.camera-name-row,.network-fields,.credentials-fields{align-items:stretch;flex-direction:column`,
 	}
 	for _, fragment := range required {
 		if !strings.Contains(ipCamerasPageHTML, fragment) {
 			t.Errorf("IP cameras dialog does not contain %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		`.camera-name-row,.network-fields,.credentials-fields{display:flex`,
+		`.camera-name-row,.network-fields,.credentials-fields{align-items:stretch;flex-direction:column`,
+	} {
+		if !strings.Contains(applicationStyle, fragment) {
+			t.Errorf("shared theme does not contain %q", fragment)
 		}
 	}
 	for _, fragment := range []string{
@@ -137,8 +143,8 @@ func TestIPCamerasHeadingPlacesDiscoveryButtonOnTheRight(t *testing.T) {
 		t.Fatal("IP cameras heading and discovery button are not in one row")
 	}
 	for _, fragment := range []string{`.page-heading{display:flex`, `justify-content:space-between`} {
-		if !strings.Contains(ipCamerasPageHTML, fragment) {
-			t.Errorf("IP cameras page does not contain %q", fragment)
+		if !strings.Contains(applicationStyle, fragment) {
+			t.Errorf("shared theme does not contain %q", fragment)
 		}
 	}
 }
@@ -159,8 +165,7 @@ func TestCameraTablesProvideDeleteActions(t *testing.T) {
 
 func TestIPCamerasPageSupportsDahuaInitializationAndNetworkSettings(t *testing.T) {
 	for _, fragment := range []string{
-		`<th>Инициализация</th>`,
-		`eq .InitializationStatus "uninitialized"`,
+		`data-camera-access="{{.ID}}"`,
 		`}}Авторизовать{{else if`,
 		`data-camera-access="{{.ID}}"`,
 		`/setup-access',{method:'POST'}`,
@@ -179,16 +184,17 @@ func TestIPCamerasPageSupportsDahuaInitializationAndNetworkSettings(t *testing.T
 
 func TestIPCamerasPageShowsStreamMetadataAndTemporaryHLSPreview(t *testing.T) {
 	required := []string{
-		`<thead><tr><th>Имя</th><th>IP-адрес</th><th>Производитель</th><th>Модель</th><th>Инициализация</th><th class="toggle-cell">MediaMTX</th><th class="status-cell">Состояние</th></tr></thead>`,
-		`<tr class="camera-row" data-camera=`,
-		`<tr class="stream-details-row" data-stream-details="{{.ID}}">`,
-		`<td colspan="7"><div class="stream-details">`,
-		`<strong>Main:</strong><span data-main-stream>`,
-		`<strong>Sub:</strong><span data-sub-stream>`,
+		`<div class="camera-grid" id="ip-cameras-body">`,
+		`<article class="camera-card" data-camera=`,
+		`<div class="stream-details-panel">`,
+		`<strong>Main</strong><span data-main-stream>`,
+		`<strong>Sub</strong><span data-sub-stream>`,
+		`data-delete-ip-camera="{{.ID}}"`,
+		`class="camera-name"`,
+		`class="status-pill`,
 		`data-camera-preview="{{.ID}}" data-preview-stream="main"`,
 		`data-camera-preview="{{.ID}}" data-preview-stream="sub"`,
-		`cameraStreamDetailsRow(row,value.id)`,
-		`const details=row.nextElementSibling`,
+		`.camera-card[data-camera]`,
 		`videoStreamsLoaded.has(value.id)`,
 		`finally{videoStreamRequests.delete(value.id)}`,
 		`.MainStream.BitrateKbps`,
@@ -196,8 +202,7 @@ func TestIPCamerasPageShowsStreamMetadataAndTemporaryHLSPreview(t *testing.T) {
 		`<dialog id="camera-preview-dialog"`,
 		`id="camera-preview-frame"`,
 		`result.url`,
-		`button.closest('tr[data-stream-details]')`,
-		`details?.previousElementSibling`,
+		`button.closest('.camera-card[data-camera]')`,
 		`streamLabel=stream==='sub'?'Sub stream':'Main stream'`,
 		`+'/preview?stream='+encodeURIComponent(stream),{method:'POST'}`,
 		`'/preview/'+encodeURIComponent(session.sessionID)`,
@@ -214,6 +219,8 @@ func TestIPCamerasPageShowsStreamMetadataAndTemporaryHLSPreview(t *testing.T) {
 		}
 	}
 	for _, fragment := range []string{
+		`addIPCameraDeleteActions`,
+		`MutationObserver(addIPCameraDeleteActions)`,
 		`<th>Main stream</th>`,
 		`<th>Sub stream</th>`,
 		`<th class="preview-cell">Просмотр</th>`,
@@ -240,14 +247,14 @@ func TestIPCamerasPreviewModalShowsSelectedStreamMetadata(t *testing.T) {
 		`id="camera-preview-metadata" class="preview-metadata" aria-live="polite"`,
 		`id="camera-preview-status" class="preview-status" role="status" aria-live="polite"`,
 		`previewMetadata=document.querySelector('#camera-preview-metadata')`,
-		`details?.querySelector(kind==='sub'?'[data-sub-stream]':'[data-main-stream]')?.textContent?.trim()`,
+		`card?.querySelector(kind==='sub'?'[data-sub-stream]':'[data-main-stream]')?.textContent?.trim()`,
 		`previewMetadata.textContent='Поток: '+previewStreamLabel(kind)+' · '+current`,
 		`previewMetadata.textContent='Поток: '+previewStreamLabel(kind)+' · Разрешение: '`,
 		`value?.kind==='sub'`,
 		`value?.resolution||'—'`,
 		`value?.fps||'—'`,
 		`value?.bitrateKbps?value.bitrateKbps+' кбит/с':'—'`,
-		`renderCameraPreviewFallback(details,stream)`,
+		`renderCameraPreviewFallback(card,stream)`,
 		`renderCameraPreviewMetadata(result.stream,stream)`,
 		`previewMetadata.textContent=''`,
 	}
@@ -389,22 +396,30 @@ func TestApplicationPagesShowRaspberryNetworkAddresses(t *testing.T) {
 		"devices":    devicesPageHTML,
 		"ip-cameras": ipCamerasPageHTML,
 		"streams":    streamsPageHTML,
+		"starlink":   starlinkPageHTML,
 		"zerotier":   zeroTierPageHTML,
 	}
 	for name, page := range pages {
 		t.Run(name, func(t *testing.T) {
 			for _, fragment := range []string{
 				`id="network-info"`,
-				`fetch('/api/system/network')`,
-				`'LAN: '+(s.lan?.join(', ')||'—')`,
-				`'Wi-Fi: '+(s.wifi?.join(', ')||'—')`,
-				`if(s.localName)parts.push('Имя: '+s.localName)`,
+				`id="network-addresses"`,
+				`src="/assets/application-status.js" defer`,
 			} {
 				if !strings.Contains(page, fragment) {
 					t.Errorf("page does not contain %q", fragment)
 				}
 			}
 		})
+	}
+	for _, fragment := range []string{
+		`fetch('/api/system/network'`,
+		`'<br>Wi-Fi: '`,
+		`'<br>Имя: '`,
+	} {
+		if !strings.Contains(applicationStatusScript, fragment) {
+			t.Errorf("application status script does not contain %q", fragment)
+		}
 	}
 }
 
@@ -413,6 +428,7 @@ func TestApplicationPagesShowVersionAndManualUpdateButton(t *testing.T) {
 		"devices":    devicesPageHTML,
 		"ip-cameras": ipCamerasPageHTML,
 		"streams":    streamsPageHTML,
+		"starlink":   starlinkPageHTML,
 		"zerotier":   zeroTierPageHTML,
 	}
 	for name, page := range pages {
@@ -510,6 +526,9 @@ func TestAnalogCameraDialogUsesMediaMTXToggleBesideName(t *testing.T) {
 	if !strings.Contains(devicesPageHTML, fragment) {
 		t.Fatal("analog camera dialog does not use the IP-camera toggle layout")
 	}
+	if !strings.Contains(devicesPageHTML, `class="page-heading"`) {
+		t.Fatal("analog cameras page does not use page heading layout")
+	}
 }
 
 func renderDevicesPage(t *testing.T, devices ...v4l2.Device) string {
@@ -525,7 +544,7 @@ func renderDevicesPage(t *testing.T, devices ...v4l2.Device) string {
 	return output.String()
 }
 
-func TestAnalogCameraTableShowsConfiguredCaptureInSecondRow(t *testing.T) {
+func TestAnalogCameraCardsShowConfiguredCapture(t *testing.T) {
 	rendered := renderDevicesPage(t, v4l2.Device{
 		ID:                 "usb-camera",
 		Path:               "/dev/video2",
@@ -537,22 +556,25 @@ func TestAnalogCameraTableShowsConfiguredCaptureInSecondRow(t *testing.T) {
 	})
 
 	for _, fragment := range []string{
-		`<tr class="camera-row" data-device-id="usb-camera" data-device-path="/dev/video2"`,
-		`<tr class="stream-details-row" data-stream-details="usb-camera">`,
-		`<td colspan="8"><div class="stream-details">`,
-		`<strong>Захват:</strong><span data-device-stream>YUYV · 720x576 · 25 FPS</span>`,
+		`<article class="camera-card" data-device-id="usb-camera" data-device-path="/dev/video2"`,
+		`<div class="stream-details-panel">`,
+		`<span class="camera-name">Задняя камера</span>`,
+		`class="camera-path"`,
+		`class="btn-danger-sm danger"`,
+		`<strong>Захват</strong><span data-device-stream>YUYV · 720x576 · 25 FPS</span>`,
 		`data-device-preview="usb-camera"`,
 		`>Просмотр ▶</button>`,
 	} {
 		if !strings.Contains(rendered, fragment) {
-			t.Errorf("rendered analog camera table does not contain %q", fragment)
+			t.Errorf("rendered analog camera card does not contain %q", fragment)
 		}
 	}
 
-	buttonStart := strings.Index(rendered, `<button type="button" class="camera-link preview-button" data-device-preview="usb-camera"`)
+	buttonStart := strings.Index(rendered, `class="btn-secondary-sm camera-link preview-button" data-device-preview="usb-camera"`)
 	if buttonStart < 0 {
 		t.Fatal("analog preview button is missing")
 	}
+	buttonStart = strings.LastIndex(rendered[:buttonStart], `<button`)
 	buttonEnd := strings.Index(rendered[buttonStart:], `</button>`)
 	if buttonEnd < 0 {
 		t.Fatal("analog preview button is incomplete")
@@ -562,7 +584,7 @@ func TestAnalogCameraTableShowsConfiguredCaptureInSecondRow(t *testing.T) {
 	}
 }
 
-func TestAnalogCameraTableDisablesPreviewWithoutSavedCaptureMode(t *testing.T) {
+func TestAnalogCameraCardsDisablePreviewWithoutSavedCaptureMode(t *testing.T) {
 	rendered := renderDevicesPage(t, v4l2.Device{ID: "usb-camera", Path: "/dev/video0"})
 	if !strings.Contains(rendered, `<span data-device-stream>Режим не настроен</span>`) {
 		t.Fatal("unconfigured analog camera does not explain that its capture mode is missing")

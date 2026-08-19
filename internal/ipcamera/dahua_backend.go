@@ -56,10 +56,13 @@ func (DahuaDiscoveryBackend) Discover(ctx context.Context, opts BackendOptions) 
 	}
 	out := make([]DiscoveredDevice, 0, len(devices))
 	for _, found := range devices {
-		d := found.device
-		out = append(out, DiscoveredDevice{Vendor: "Dahua", Manufacturer: d.Manufacturer, Protocols: []string{d.Protocol}, MAC: d.MAC, IP: d.IP, SubnetMask: d.SubnetMask, Gateway: d.Gateway, Model: d.Model, SerialNumber: d.SerialNumber, FirmwareVersion: d.FirmwareVersion, DeviceType: d.DeviceClass, DeviceName: d.MachineName, HTTPPort: d.HTTPPort, ServicePort: d.ServicePort, SourceAddress: d.SourceAddress, InterfaceName: found.interfaceName, Confidence: "high", InitializationStatus: d.InitializationStatus})
+		out = append(out, dahuaDiscoveredDevice(found.device, found.interfaceName))
 	}
 	return out, nil
+}
+
+func dahuaDiscoveredDevice(d DahuaDevice, interfaceName string) DiscoveredDevice {
+	return DiscoveredDevice{Vendor: "Dahua", Manufacturer: d.Manufacturer, Protocols: []string{d.Protocol}, MAC: d.MAC, IP: d.IP, SubnetMask: d.SubnetMask, Gateway: d.Gateway, Model: d.Model, SerialNumber: d.SerialNumber, FirmwareVersion: d.FirmwareVersion, DeviceType: d.DeviceClass, DeviceName: d.MachineName, HTTPPort: d.HTTPPort, ServicePort: d.ServicePort, SourceAddress: d.SourceAddress, InterfaceName: interfaceName, Confidence: "high", InitializationStatus: d.InitializationStatus}
 }
 
 func usableIPv4Interfaces() ([]string, error) {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,18 @@ func TestServiceSavePreservesPassword(t *testing.T) {
 	}
 	if permissions := info.Mode().Perm(); permissions != 0o600 {
 		t.Fatalf("ip-cameras.json permissions = %o, want 600", permissions)
+	}
+}
+
+func TestDiscoveryEvidenceFillsMissingInterfaceName(t *testing.T) {
+	saved := persistedCamera{ID: "mac:e0:2e:fe:6a:6c:27", Address: "192.168.1.108"}
+	updated := updateGenericDiscoveredCamera(saved, saved.ID, DiscoveredDevice{Vendor: "Dahua", MAC: "e0:2e:fe:6a:6c:27", IP: net.ParseIP("192.168.1.108"), InterfaceName: "eth0"}, time.Now())
+	if updated.InterfaceName != "eth0" {
+		t.Fatalf("InterfaceName=%q", updated.InterfaceName)
+	}
+	view := cameraFromPersisted(updated, true)
+	if view.InterfaceName != "eth0" {
+		t.Fatalf("camera InterfaceName=%q", view.InterfaceName)
 	}
 }
 
@@ -463,5 +476,107 @@ func TestServiceRefreshVideoStreamsPersistsDahuaParameters(t *testing.T) {
 	}
 	if got := reloaded.List()[0]; got.MainStream != camera.MainStream || got.SubStream != camera.SubStream || got.InitializationStatus != InitializationCompleted {
 		t.Fatalf("reloaded camera = %#v", got)
+	}
+}
+
+func TestCheckKnownUNVStatusUsesReachableTCPService(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	address, port, _ := net.SplitHostPort(listener.Addr().String())
+	targets := map[string]unvStatusTarget{
+		"online":  {Address: address, HTTPPort: uint16Port(t, port)},
+		"offline": {Address: "127.0.0.1", HTTPPort: 1},
+	}
+
+	online := checkKnownUNVStatus(context.Background(), targets, 100*time.Millisecond)
+	if len(online) != 1 || online[0] != "online" {
+		t.Fatalf("online IDs = %#v, want [online]", online)
+	}
+}
+
+func TestServiceRefreshVideoStreamsPersistsUNVParameters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Digest realm="camera", nonce="nonce", qop="auth"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/LAPI/V1.0/System/DeviceInfo":
+			_, _ = w.Write([]byte(`{"Response":{"ResponseCode":0,"Data":{
+				"DeviceName":"Front camera",
+				"DeviceModel":"IPC2124LE-ADF28KM-H",
+				"SerialNumber":"serial",
+				"FirmwareVersion":"firmware"
+			}}}`))
+		case "/LAPI/V1.0/Channels/0/Media/Video/Streams/DetailInfos":
+			_, _ = w.Write([]byte(`{"Response":{"ResponseCode":0,"Data":{
+				"Num": 2,
+				"VideoStreamInfos": [{
+					"ID": 0,
+					"VideoEncodeInfo": {
+						"Resolution": {"Width": 1920, "Height": 1080},
+						"FrameRate": 25,
+						"BitRate": 4096
+					}
+				}, {
+					"ID": 1,
+					"VideoEncodeInfo": {
+						"Resolution": {"Width": 640, "Height": 360},
+						"FrameRate": 12,
+						"BitRate": 768
+					}
+				}]
+			}}}`))
+		case "/LAPI/V1.0/Channels/0/Media/Video/Streams/0", "/LAPI/V1.0/Channels/0/Media/Video/Streams/1":
+			_, _ = w.Write([]byte(`{"Response":{"ResponseCode":4,"ResponseString":"Not Supported","Data":"null"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serverURL, _ := url.Parse(server.URL)
+
+	service, err := NewService(t.TempDir(), DahuaDiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.cameras["camera"] = persistedCamera{
+		ID:             "camera",
+		Address:        serverURL.Hostname(),
+		HTTPPort:       uint16Port(t, serverURL.Port()),
+		Manufacturer:   "UNV",
+		Protocol:       "UNV-UDP-3702",
+		Username:       "admin",
+		Password:       "secret",
+		MainStreamPath: "rtsp://127.0.0.1/main",
+		SubStreamPath:  "rtsp://127.0.0.1/sub",
+	}
+	service.unvLAPI.digest.http = server.Client()
+	service.rtspProbe = func(_ context.Context, source string) (VideoStream, error) {
+		if strings.Contains(source, "/main") {
+			return VideoStream{Resolution: "1280x720", FPS: "12"}, nil
+		}
+		return VideoStream{Resolution: "640x360", FPS: "6"}, nil
+	}
+
+	camera, err := service.RefreshVideoStreams(context.Background(), "camera")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if camera.Model != "IPC2124LE-ADF28KM-H" || camera.Serial != "serial" || camera.Firmware != "firmware" {
+		t.Fatalf("camera identity = %#v", camera)
+	}
+	if camera.MainStream != (VideoStream{Resolution: "1920x1080", FPS: "25", BitrateKbps: 4096}) {
+		t.Fatalf("main stream = %#v", camera.MainStream)
+	}
+	if camera.SubStream != (VideoStream{Resolution: "640x360", FPS: "12", BitrateKbps: 768}) {
+		t.Fatalf("sub stream = %#v", camera.SubStream)
+	}
+	if camera.InitializationStatus != InitializationCompleted {
+		t.Fatalf("initialization status = %q", camera.InitializationStatus)
 	}
 }

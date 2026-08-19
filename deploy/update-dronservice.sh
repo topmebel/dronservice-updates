@@ -148,6 +148,8 @@ else
 fi
 
 install -d -o root -g root -m 0755 "${work_dir}/deployment-backup" /usr/local/libexec /etc/systemd/system /usr/local/etc || fail_update create-deployment-directory-failed
+install -d -o admin -g admin -m 0750 /var/lib/dronservice || fail_update create-camera-state-directory-failed
+[ ! -d /var/lib/dronservice/camera-network.lock ] || rmdir /var/lib/dronservice/camera-network.lock || fail_update migrate-camera-network-lock-failed
 install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx || fail_update create-mediamtx-directory-failed
 for entry in \
 	"update-dronservice.sh:/usr/local/libexec/dronservice-update:0755" \
@@ -176,7 +178,7 @@ if [ ! -e /usr/local/etc/mediamtx/mediamtx.yml ]; then
 	if [ -e /usr/local/etc/mediamtx.yml ]; then install -o admin -g admin -m 0660 /usr/local/etc/mediamtx.yml /usr/local/etc/mediamtx/mediamtx.yml || fail_update migrate-mediamtx-config-failed; else install -o admin -g admin -m 0660 "${work_dir}/mediamtx.yml" /usr/local/etc/mediamtx/mediamtx.yml || fail_update install-mediamtx-config-failed; fi
 fi
 systemctl daemon-reload || fail_update daemon-reload-failed
-systemctl enable dronservice-update.path dronservice-mediamtx-install.path dronservice-camera-network.path >/dev/null 2>&1 || fail_update enable-deployment-units-failed
+systemctl enable --now dronservice-update.path dronservice-mediamtx-install.path dronservice-camera-network.path >/dev/null 2>&1 || fail_update enable-deployment-units-failed
 
 next_current=/usr/local/lib/dronservice/.current-next
 next_binary=/usr/local/bin/.dronservice-next

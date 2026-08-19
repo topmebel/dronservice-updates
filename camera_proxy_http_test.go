@@ -5,6 +5,7 @@ import "testing"
 func TestRequestHostname(t *testing.T) {
 	tests := map[string]string{
 		"192.168.1.10:80": "192.168.1.10",
+		"192.168.88.254":  "192.168.88.254",
 		"raspberry.local": "raspberry.local",
 		"[fe80::1]:8080":  "fe80::1",
 	}
@@ -28,5 +29,15 @@ func TestRequestClientAddress(t *testing.T) {
 		if got := requestClientAddress(input); got != want {
 			t.Errorf("requestClientAddress(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestCameraProxyPublicURLUsesValidatedExternalHost(t *testing.T) {
+	got, err := cameraProxyPublicURL("192.168.88.254", "127.0.0.1:43210")
+	if err != nil || got != "http://192.168.88.254:43210/" {
+		t.Fatalf("URL=%q err=%v", got, err)
+	}
+	if _, err := cameraProxyPublicURL("evil/host", "127.0.0.1:43210"); err == nil {
+		t.Fatal("host injection accepted")
 	}
 }

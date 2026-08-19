@@ -15,6 +15,13 @@ type testAddress string
 func (a testAddress) Network() string { return "ip" }
 func (a testAddress) String() string  { return string(a) }
 
+type fakeStarlinkRebooter struct{ called bool }
+
+func (r *fakeStarlinkRebooter) Reboot(context.Context) error {
+	r.called = true
+	return nil
+}
+
 func TestInternetStatusHandlerKeepsOnlineAndAddsDetailedStatus(t *testing.T) {
 	online := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer online.Close()
@@ -24,7 +31,7 @@ func TestInternetStatusHandlerKeepsOnlineAndAddsDetailedStatus(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/system/internet", nil)
 	response := httptest.NewRecorder()
-	internetStatusHandler(response, request)
+	internetStatusHandler(nil)(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200", response.Code)
@@ -116,5 +123,30 @@ func TestBuildNetworkStatusSeparatesLANAndWiFi(t *testing.T) {
 	}
 	if status.LocalName != "raspberry.local" {
 		t.Fatalf("LocalName = %q", status.LocalName)
+	}
+}
+
+func TestStarlinkRebootHandlerRequiresActionHeader(t *testing.T) {
+	rebooter := &fakeStarlinkRebooter{}
+	request := httptest.NewRequest(http.MethodPost, "/api/system/starlink/reboot", nil)
+	response := httptest.NewRecorder()
+
+	starlinkRebootHandler(rebooter)(response, request)
+
+	if response.Code != http.StatusForbidden || rebooter.called {
+		t.Fatalf("status = %d, reboot called = %t", response.Code, rebooter.called)
+	}
+}
+
+func TestStarlinkRebootHandlerStartsReboot(t *testing.T) {
+	rebooter := &fakeStarlinkRebooter{}
+	request := httptest.NewRequest(http.MethodPost, "/api/system/starlink/reboot", nil)
+	request.Header.Set("X-DronService-Action", "reboot-starlink")
+	response := httptest.NewRecorder()
+
+	starlinkRebootHandler(rebooter)(response, request)
+
+	if response.Code != http.StatusAccepted || !rebooter.called {
+		t.Fatalf("status = %d, reboot called = %t", response.Code, rebooter.called)
 	}
 }

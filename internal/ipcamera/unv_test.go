@@ -253,6 +253,22 @@ type staticBackend struct {
 	err     error
 }
 
+type optionCaptureBackend struct{ options *BackendOptions }
+
+func (b optionCaptureBackend) Name() string { return "capture" }
+func (b optionCaptureBackend) Discover(_ context.Context, options BackendOptions) ([]DiscoveredDevice, error) {
+	*b.options = options
+	return []DiscoveredDevice{{Vendor: "Dahua", IP: net.ParseIP("192.168.1.108"), InterfaceName: options.InterfaceName}}, nil
+}
+
+func TestDiscoveryInterfaceOverrideIsPassedToBackend(t *testing.T) {
+	var captured BackendOptions
+	devices, err := discoverWithBackends(context.Background(), []DiscoveryBackend{optionCaptureBackend{options: &captured}}, BackendOptions{InterfaceName: "eth0"})
+	if err != nil || captured.InterfaceName != "eth0" || len(devices) != 1 || devices[0].InterfaceName != "eth0" {
+		t.Fatalf("captured=%+v devices=%+v err=%v", captured, devices, err)
+	}
+}
+
 func (b staticBackend) Name() string { return b.name }
 func (b staticBackend) Discover(context.Context, BackendOptions) ([]DiscoveredDevice, error) {
 	return b.devices, b.err

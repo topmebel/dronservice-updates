@@ -29,6 +29,7 @@ MediaMTX API must remain bound to `127.0.0.1:9997`. Do not forward port 80,
 | `DRONSERVICE_CAMERA_PROXY_TTL` | `15m` | camera web proxy lifetime |
 | `DRONSERVICE_CAMERA_PROXY_ADDR` | `:0` | temporary proxy listener |
 | `DRONSERVICE_CAMERA_NETWORK_INTERFACES` | `eth0,wlan0` | root helper interface allowlist |
+| `DRONSERVICE_DISCOVERY_INTERFACE` | automatic | explicit camera discovery interface override |
 | `DRONSERVICE_STREAM_PREVIEW_TTL` | `10m` | HLS preview lifetime |
 | `DRONSERVICE_HLS_PUBLIC_URL` | detected Pi IPv4 on port 8888 | browser HLS base URL |
 
@@ -49,7 +50,8 @@ DRONSERVICE_CAMERA_PROXY_ADDR=:0
 подтверждает присутствие камеры на Ethernet, но сам по себе не создаёт IPv4
 маршрут. Например, Raspberry Pi `192.168.88.254/24` может обнаружить Dahua
 `192.168.1.108/24`, но не сможет открыть HTTP через gateway
-`192.168.88.1`. В этом случае DronService просит отдельный root-owned helper
+`192.168.88.1`. В этом случае DronService просит отдельный root-owned helper,
+который systemd запускает от `admin`,
 временно добавить свободный secondary address наподобие
 `192.168.1.254/24` на подтверждённый `eth0`.
 
@@ -59,6 +61,14 @@ DRONSERVICE_CAMERA_PROXY_ADDR=:0
 detection и назначает адресу kernel `valid_lft`. Адрес автоматически исчезает
 по TTL даже после аварии сервиса. Настройте разрешённые физические интерфейсы в
 `/etc/dronservice/camera-network.conf` и перезапустите path unit после изменения.
+Helper binary остаётся `root:root`, но только его процесс получает
+`CAP_NET_ADMIN` и `CAP_NET_RAW`; `CAP_DAC_OVERRIDE` не используется. `arping`
+определяется через безопасный executable lookup, поэтому compatibility symlink
+не нужен. На Raspberry Pi OS требуется пакет `iputils-arping`.
+Обычно interface сохраняется из входящего discovery packet автоматически. Для
+диагностики или неоднозначной многосетевой конфигурации задайте override в
+`/etc/dronservice/dronservice.env`, например
+`DRONSERVICE_DISCOVERY_INTERFACE=eth0`; installer и OTA этот файл не заменяют.
 
 ## Предпросмотр видеопотока
 
@@ -226,6 +236,8 @@ previous directory under `/usr/local/lib/dronservice/releases/`, update the
   безопасно создать ограниченный lease. При неизвестной mask адрес не угадывается.
 - Проверить helper: `systemctl status dronservice-camera-network.path` и
   `journalctl -u dronservice-camera-network.service -n 100`.
+- Проверить executable/capabilities: `command -v arping` и
+  `systemctl show dronservice-camera-network.service -p User -p CapabilityBoundingSet`.
 - Ручное восстановление: остановите proxy, дождитесь TTL либо удалите только
   адрес, указанный в `/var/lib/dronservice/camera-network.leases.json`, командой
   `sudo ip address del ADDRESS/PREFIX dev INTERFACE`. Не удаляйте постоянные

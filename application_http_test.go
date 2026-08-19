@@ -48,6 +48,8 @@ func TestApplicationStatusScriptUsesManualUpdateOnly(t *testing.T) {
 		`fetch('/api/update',{method:'POST'})`,
 		`confirm('Установить новую версию DronService?`,
 		`button.hidden=!status.updateAvailable||status.installing`,
+		`updateNetworkInfo()`,
+		`networkAddresses.innerHTML`,
 	} {
 		if !strings.Contains(applicationStatusScript, fragment) {
 			t.Errorf("application status script does not contain %q", fragment)
@@ -56,7 +58,10 @@ func TestApplicationStatusScriptUsesManualUpdateOnly(t *testing.T) {
 	if strings.Contains(applicationStatusScript, "setInterval") {
 		t.Fatal("application status script must not automatically start updates")
 	}
-	if strings.Contains(applicationStatusScript, "Обновление установлено") {
-		t.Fatal("application status script must not show a message when no update is available")
+	if strings.Contains(applicationStatusScript, "Перезагрузить Starlink") {
+		t.Fatal("Starlink reboot must only be available on the Starlink page")
+	}
+	if strings.Contains(applicationStatusScript, "/api/system/starlink/reboot") {
+		t.Fatal("application status script must not call Starlink reboot API")
 	}
 }

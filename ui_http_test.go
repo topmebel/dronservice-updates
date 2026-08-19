@@ -12,12 +12,16 @@ func TestApplicationPagesUseSharedVisualTheme(t *testing.T) {
 		"devices":    devicesPageHTML,
 		"ip-cameras": ipCamerasPageHTML,
 		"streams":    streamsPageHTML,
+		"starlink":   starlinkPageHTML,
 		"zerotier":   zeroTierPageHTML,
 	}
 	for name, page := range pages {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(page, `<link rel="stylesheet" href="/assets/application.css">`) {
 				t.Fatal("page does not load the shared visual theme")
+			}
+			if !strings.Contains(page, `app-shell`) {
+				t.Fatal("page does not use the sidebar layout shell")
 			}
 		})
 	}
@@ -39,7 +43,13 @@ func TestApplicationStyleHandlerServesLocalAccessibleTheme(t *testing.T) {
 		`height:24px!important`,
 		`border-radius:999px!important`,
 		`flex:0 0 44px!important`,
-		`@media(max-width:600px)`,
+		`.app-shell`,
+		`.app-sidebar`,
+		`flex-direction:column!important`,
+		`.camera-grid`,
+		`.camera-card`,
+		`.stream-details-panel`,
+		`.status-pill`,
 		`@media(prefers-reduced-motion:reduce)`,
 	} {
 		if !strings.Contains(response.Body.String(), fragment) {

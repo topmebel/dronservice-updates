@@ -23,6 +23,7 @@ func TestDronServiceUnitProvidesSafeRuntimeDefaults(t *testing.T) {
 		"UMask=0077",
 		"SyslogIdentifier=dronservice",
 		"EnvironmentFile=-/etc/dronservice/update.conf",
+		"EnvironmentFile=-/etc/dronservice/dronservice.env",
 	}
 	for _, setting := range required {
 		if !strings.Contains(unit, setting) {
@@ -96,7 +97,7 @@ func TestInstallerCreatesWritablePathsBeforeStartingService(t *testing.T) {
 			t.Errorf("installer lacks production invariant %q", required)
 		}
 	}
-	for _, command := range []string{"/usr/sbin/ip", "/usr/sbin/arping"} {
+	for _, command := range []string{"command -v \"$command\"", "iputils-arping"} {
 		if !strings.Contains(script, command) {
 			t.Errorf("installer does not validate %q", command)
 		}
@@ -183,16 +184,26 @@ func TestCameraNetworkPrivilegeIsIsolatedFromMainService(t *testing.T) {
 		t.Fatal("main DronService unit must not receive CAP_NET_ADMIN")
 	}
 	helper := readDeploymentFile(t, "dronservice-camera-network.service")
-	for _, required := range []string{"User=root", "CAP_NET_ADMIN CAP_NET_RAW", "NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true", "PrivateTmp=true", "ReadWritePaths=/var/lib/dronservice", "EnvironmentFile=-/etc/dronservice/camera-network.conf"} {
+	for _, required := range []string{"User=admin", "Group=admin", "CAP_NET_ADMIN CAP_NET_RAW", "NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true", "PrivateTmp=true", "ReadWritePaths=/var/lib/dronservice", "EnvironmentFile=-/etc/dronservice/camera-network.conf", "UMask=0077"} {
 		if !strings.Contains(helper, required) {
 			t.Errorf("camera network helper unit lacks %q", required)
+		}
+	}
+	installer := readDeploymentFile(t, "install-dronservice.sh")
+	for _, required := range []string{"install -d -o admin -g admin -m 0750 /var/lib/dronservice", "runuser -u admin", "camera network helper no-op check failed", "systemctl is-active --quiet dronservice-camera-network.path"} {
+		if !strings.Contains(installer, required) {
+			t.Errorf("installer lacks helper diagnostic %q", required)
+		}
+	}
+	for _, required := range []string{"getent group admin", "helper_owner", "root:root", "CapabilityBoundingSet --value", "helper lacks required capabilities"} {
+		if !strings.Contains(installer, required) {
+			t.Errorf("installer lacks helper validation %q", required)
 		}
 	}
 	pathUnit := readDeploymentFile(t, "dronservice-camera-network.path")
 	if !strings.Contains(pathUnit, "PathChanged=/var/lib/dronservice/camera-network.request.json") {
 		t.Fatal("camera network path does not watch the typed request")
 	}
-	installer := readDeploymentFile(t, "install-dronservice.sh")
 	installHelper := strings.Index(installer, "install -o root -g root -m 0755 \"$helper_binary\"")
 	startHelper := strings.Index(installer, "dronservice-camera-network.path")
 	if installHelper < 0 || startHelper < 0 || installHelper >= startHelper {

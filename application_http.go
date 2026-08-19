@@ -36,7 +36,17 @@ func applicationStatusScriptHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 const applicationStatusScript = `(()=>{
-const versionElement=document.querySelector('#app-version'),button=document.querySelector('#update-app'),stateElement=document.querySelector('#update-app-state');
+const versionElement=document.querySelector('#app-version'),button=document.querySelector('#update-app'),stateElement=document.querySelector('#update-app-state'),networkAddresses=document.querySelector('#network-addresses');
+async function updateNetworkInfo(){
+  if(!networkAddresses)return;
+  try{
+    const status=await fetch('/api/system/network',{cache:'no-store'}).then(response=>{if(!response.ok)throw new Error('network unavailable');return response.json()});
+    networkAddresses.innerHTML='LAN: '+(status.lan?.join(', ')||'—')+'<br>Wi-Fi: '+(status.wifi?.join(', ')||'—')+'<br>Имя: '+(status.localName||'—');
+  }catch(error){
+    networkAddresses.innerHTML='<span>Сеть: адреса недоступны</span>';
+  }
+}
+updateNetworkInfo();
 if(!versionElement||!button||!stateElement)return;
 let polling=false;
 const stateLabels={pending:'Ожидание установки…',downloading:'Скачивание…',verifying:'Проверка подписи…',installing:'Установка…',restarting:'Перезапуск…',failed:'Ошибка обновления'};

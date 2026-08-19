@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"DronService/internal/starlink"
 )
 
 var internetChecker = newConnectivityChecker([]string{
@@ -24,9 +27,11 @@ const (
 )
 
 type internetStatusResponse struct {
-	Online    bool      `json:"online"`
-	Status    string    `json:"status"`
-	CheckedAt time.Time `json:"checkedAt"`
+	Online    bool             `json:"online"`
+	Status    string           `json:"status"`
+	PingMS    float64          `json:"pingMs,omitempty"`
+	Starlink  *starlink.Status `json:"starlink,omitempty"`
+	CheckedAt time.Time        `json:"checkedAt"`
 }
 
 type networkStatusResponse struct {
@@ -49,6 +54,7 @@ type connectivityChecker struct {
 	status    string
 	confirmed bool
 	failures  int
+	pingMS    float64
 	checkedAt time.Time
 }
 
@@ -82,28 +88,38 @@ func (c *connectivityChecker) Status(ctx context.Context) internetStatusResponse
 
 	checkCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	results := make(chan bool, len(c.endpoints))
+	type checkResult struct {
+		reachable bool
+		latency   time.Duration
+	}
+	results := make(chan checkResult, len(c.endpoints))
 	for _, endpoint := range c.endpoints {
 		go func() {
+			startedAt := time.Now()
 			request, err := http.NewRequestWithContext(checkCtx, http.MethodGet, endpoint, nil)
 			if err != nil {
-				results <- false
+				results <- checkResult{}
 				return
 			}
 			response, err := c.client.Do(request)
 			if err != nil {
-				results <- false
+				results <- checkResult{}
 				return
 			}
 			response.Body.Close()
-			results <- response.StatusCode >= 200 && response.StatusCode < 500
+			results <- checkResult{
+				reachable: response.StatusCode >= 200 && response.StatusCode < 500,
+				latency:   time.Since(startedAt),
+			}
 		}()
 	}
 
 	reachable := false
 	for range c.endpoints {
-		if <-results {
+		result := <-results
+		if result.reachable {
 			reachable = true
+			c.pingMS = float64(result.latency.Microseconds()) / 1000
 			cancel()
 			break
 		}
@@ -126,11 +142,44 @@ func (c *connectivityChecker) Status(ctx context.Context) internetStatusResponse
 }
 
 func (c *connectivityChecker) response() internetStatusResponse {
-	return internetStatusResponse{Online: c.online, Status: c.status, CheckedAt: c.checkedAt}
+	return internetStatusResponse{Online: c.online, Status: c.status, PingMS: c.pingMS, CheckedAt: c.checkedAt}
 }
 
-func internetStatusHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, internetChecker.Status(r.Context()))
+func internetStatusHandler(starlinkService *starlink.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status := internetChecker.Status(r.Context())
+		if starlinkService != nil {
+			starlinkStatus := starlinkService.Status(r.Context(), status.Online)
+			status.Starlink = &starlinkStatus
+			if starlinkStatus.InternetViaStarlink && starlinkStatus.PingMS > 0 {
+				status.PingMS = starlinkStatus.PingMS
+			}
+		}
+		writeJSON(w, http.StatusOK, status)
+	}
+}
+
+type starlinkRebooter interface {
+	Reboot(context.Context) error
+}
+
+func starlinkRebootHandler(starlinkService starlinkRebooter) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-DronService-Action") != "reboot-starlink" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Некорректное подтверждение операции"})
+			return
+		}
+		if starlinkService == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Мониторинг Starlink недоступен"})
+			return
+		}
+		if err := starlinkService.Reboot(r.Context()); err != nil {
+			log.Printf("reboot Starlink terminal: %v", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось перезагрузить Starlink"})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "rebooting"})
+	}
 }
 
 func networkStatusHandler(w http.ResponseWriter, r *http.Request) {

@@ -69,18 +69,11 @@ func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Man
 			writeJSON(w, http.StatusOK, map[string]string{"mode": "direct", "url": result.DirectURL})
 			return
 		}
-		host, err := requestHostname(r.Host)
+		proxyURL, err := cameraProxyPublicURL(r.Host, result.Address)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Некорректный адрес DronService"})
 			return
 		}
-		_, port, err := net.SplitHostPort(result.Address)
-		if err != nil {
-			log.Printf("camera setup proxy listener address: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось сформировать адрес временного доступа"})
-			return
-		}
-		proxyURL := (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port), Path: "/"}).String()
 		response := map[string]any{"mode": "proxy", "state": "proxy_ready", "url": proxyURL, "expiresAt": result.ExpiresAt}
 		if lease != nil {
 			response["temporaryAddress"] = lease.Address
@@ -91,6 +84,18 @@ func cameraProxyStartHandler(cameras *ipcamera.Service, proxies *cameraproxy.Man
 		}
 		writeJSON(w, http.StatusOK, response)
 	}
+}
+
+func cameraProxyPublicURL(requestHost, listenerAddress string) (string, error) {
+	host, err := requestHostname(requestHost)
+	if err != nil {
+		return "", err
+	}
+	_, port, err := net.SplitHostPort(listenerAddress)
+	if err != nil {
+		return "", err
+	}
+	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port), Path: "/"}).String(), nil
 }
 
 func requestClientAddress(remoteAddress string) string {

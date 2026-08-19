@@ -123,10 +123,20 @@ type Service struct {
 	online      map[string]bool
 	discovery   DahuaDiscoverOptions
 	dahuaCGI    *dahuaCGIClient
+	unvLAPI     *unvLAPIClient
+	rtspProbe   func(context.Context, string) (VideoStream, error)
 }
 
 func NewService(dataDir string, discovery DahuaDiscoverOptions) (*Service, error) {
-	service := &Service{filePath: filepath.Join(dataDir, "ip-cameras.json"), cameras: make(map[string]persistedCamera), online: make(map[string]bool), discovery: discovery, dahuaCGI: newDahuaCGIClient()}
+	service := &Service{
+		filePath:  filepath.Join(dataDir, "ip-cameras.json"),
+		cameras:   make(map[string]persistedCamera),
+		online:    make(map[string]bool),
+		discovery: discovery,
+		dahuaCGI:  newDahuaCGIClient(),
+		unvLAPI:   newUNVLAPIClient(),
+		rtspProbe: probeRTSPVideoStream,
+	}
 	data, err := os.ReadFile(service.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -245,19 +255,57 @@ func updateGenericDiscoveredCamera(saved persistedCamera, id string, device Disc
 	return saved
 }
 
+type unvStatusTarget struct {
+	Address  string
+	HTTPPort uint16
+}
+
+func checkKnownUNVStatus(ctx context.Context, targets map[string]unvStatusTarget, timeout time.Duration) []string {
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	results := make(chan string, len(targets))
+	for id, target := range targets {
+		go func() {
+			httpPort := target.HTTPPort
+			if httpPort == 0 {
+				httpPort = 80
+			}
+			dialer := net.Dialer{Timeout: timeout}
+			for _, port := range []uint16{httpPort, 554} {
+				connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Address, fmt.Sprintf("%d", port)))
+				if err != nil {
+					continue
+				}
+				_ = connection.Close()
+				results <- id
+				return
+			}
+			results <- ""
+		}()
+	}
+	online := make([]string, 0, len(targets))
+	for range targets {
+		if id := <-results; id != "" {
+			online = append(online, id)
+		}
+	}
+	return online
+}
+
 func (s *Service) CheckStatus(ctx context.Context) ([]Camera, error) {
 	s.discoveryMu.Lock()
 	defer s.discoveryMu.Unlock()
 	s.mu.RLock()
 	expectedDahua := make(map[string]struct{})
-	expectedUNV := make(map[string]net.IP)
+	expectedUNV := make(map[string]unvStatusTarget)
 	for id, saved := range s.cameras {
 		if saved.Manufacturer == "Dahua" || saved.Protocol == "DHIP" {
 			expectedDahua[id] = struct{}{}
 		}
 		if saved.Manufacturer == "UNV" || strings.Contains(saved.Protocol, "UNV-") {
-			if ip := net.ParseIP(saved.Address).To4(); ip != nil {
-				expectedUNV[id] = ip
+			if net.ParseIP(saved.Address).To4() != nil {
+				expectedUNV[id] = unvStatusTarget{Address: saved.Address, HTTPPort: saved.HTTPPort}
 			}
 		}
 	}
@@ -273,10 +321,10 @@ func (s *Service) CheckStatus(ctx context.Context) ([]Camera, error) {
 	statusOptions.Timeout = time.Second
 	statusOptions.IncludeLegacy = false
 	type statusResult struct {
-		dahua []DahuaDevice
-		unv   []DiscoveredDevice
-		err   error
-		kind  string
+		dahua     []DahuaDevice
+		unvOnline []string
+		err       error
+		kind      string
 	}
 	resultCount := 0
 	results := make(chan statusResult, 2)
@@ -290,12 +338,12 @@ func (s *Service) CheckStatus(ctx context.Context) ([]Camera, error) {
 	if len(expectedUNV) > 0 {
 		resultCount++
 		go func() {
-			found, err := discoverKnownUNVARP(ctx, statusOptions.InterfaceName, statusOptions.Timeout, expectedUNV)
-			results <- statusResult{unv: found, err: err, kind: "UNV"}
+			found := checkKnownUNVStatus(ctx, expectedUNV, statusOptions.Timeout)
+			results <- statusResult{unvOnline: found, kind: "UNV"}
 		}()
 	}
 	var foundDahua []DahuaDevice
-	var foundUNV []DiscoveredDevice
+	var onlineUNV []string
 	for i := 0; i < resultCount; i++ {
 		result := <-results
 		if result.err != nil {
@@ -303,7 +351,7 @@ func (s *Service) CheckStatus(ctx context.Context) ([]Camera, error) {
 			continue
 		}
 		foundDahua = append(foundDahua, result.dahua...)
-		foundUNV = append(foundUNV, result.unv...)
+		onlineUNV = append(onlineUNV, result.unvOnline...)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -324,8 +372,7 @@ func (s *Service) CheckStatus(ctx context.Context) ([]Camera, error) {
 		online[id] = true
 		updated = true
 	}
-	for _, device := range foundUNV {
-		id := discoveredDeviceKey(device)
+	for _, id := range onlineUNV {
 		saved, exists := next[id]
 		if !exists {
 			continue
@@ -411,16 +458,50 @@ func (s *Service) RefreshVideoStreams(ctx context.Context, id string) (Camera, e
 	if saved.InitializationStatus == InitializationRequired {
 		return Camera{}, ErrDahuaInitializationRequired
 	}
-	if saved.Manufacturer != "Dahua" && saved.Protocol != "DHIP" {
+	isDahua := saved.Manufacturer == "Dahua" || saved.Protocol == "DHIP"
+	isUNV := saved.Manufacturer == "UNV" || strings.Contains(saved.Protocol, "UNV-")
+	if !isDahua && !isUNV {
 		return cameraFromPersisted(saved, online), nil
 	}
 	if strings.TrimSpace(saved.Username) == "" || saved.Password == "" {
 		return Camera{}, ErrDahuaCredentials
 	}
 
-	mainStream, subStream, err := s.dahuaCGI.VideoStreams(ctx, saved.Address, saved.HTTPPort, saved.Username, saved.Password)
-	if err != nil {
-		return Camera{}, err
+	var mainStream, subStream VideoStream
+	var info unvDeviceInfo
+	if isDahua {
+		var err error
+		mainStream, subStream, err = s.dahuaCGI.VideoStreams(ctx, saved.Address, saved.HTTPPort, saved.Username, saved.Password)
+		if err != nil {
+			return Camera{}, err
+		}
+	} else {
+		info, _ = s.unvLAPI.DeviceInfo(ctx, saved.Address, saved.HTTPPort, saved.Username, saved.Password)
+		mainStream, subStream, _ = s.unvLAPI.VideoStreams(ctx, saved.Address, saved.HTTPPort, saved.Username, saved.Password)
+		mainSource := rtspURLWithCredentials(saved.MainStreamPath, saved.Username, saved.Password)
+		subSource := rtspURLWithCredentials(saved.SubStreamPath, saved.Username, saved.Password)
+		var mainErr, subErr error
+		if mainSource != "" {
+			probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+			probed, err := s.rtspProbe(probeCtx, mainSource)
+			cancel()
+			if err != nil {
+				mainErr = err
+			}
+			mainStream = mergeVideoStream(mainStream, probed)
+		}
+		if subSource != "" {
+			probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+			probed, err := s.rtspProbe(probeCtx, subSource)
+			cancel()
+			if err != nil {
+				subErr = err
+			}
+			subStream = mergeVideoStream(subStream, probed)
+		}
+		if mainStream == (VideoStream{}) && subStream == (VideoStream{}) {
+			return Camera{}, fmt.Errorf("read UNV video streams: main: %v; sub: %v", mainErr, subErr)
+		}
 	}
 
 	s.mu.Lock()
@@ -435,6 +516,22 @@ func (s *Service) RefreshVideoStreams(ctx context.Context, id string) (Camera, e
 	}
 	current.MainStream, current.SubStream = mainStream, subStream
 	current.InitializationStatus = InitializationCompleted
+	if isUNV {
+		if info.DeviceModel != "" {
+			current.Model = info.DeviceModel
+		} else if info.PrototypeName != "" {
+			current.Model = info.PrototypeName
+		}
+		if info.DeviceName != "" {
+			current.MachineName = info.DeviceName
+		}
+		if info.SerialNumber != "" {
+			current.Serial = info.SerialNumber
+		}
+		if info.FirmwareVersion != "" {
+			current.Firmware = info.FirmwareVersion
+		}
+	}
 	next[id] = current
 	if err := writeJSONFile(s.filePath, next); err != nil {
 		return Camera{}, err

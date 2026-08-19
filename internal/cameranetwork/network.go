@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type Request struct {
@@ -47,13 +50,14 @@ type Client struct {
 	mu                      sync.Mutex
 	requestPath, statusPath string
 	timeout                 time.Duration
+	interfaceByName         func(string) (*net.Interface, error)
 }
 
 func NewClient(dataDir string, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &Client{requestPath: filepath.Join(dataDir, "camera-network.request.json"), statusPath: filepath.Join(dataDir, "camera-network.status.json"), timeout: timeout}
+	return &Client{requestPath: filepath.Join(dataDir, "camera-network.request.json"), statusPath: filepath.Join(dataDir, "camera-network.status.json"), timeout: timeout, interfaceByName: net.InterfaceByName}
 }
 
 func (c *Client) Ensure(ctx context.Context, cameraIP, mask, gateway, mac, interfaceName string, ttl time.Duration) (Lease, error) {
@@ -70,6 +74,9 @@ func (c *Client) Ensure(ctx context.Context, cameraIP, mask, gateway, mac, inter
 	}
 	if !validInterface(interfaceName) {
 		return Lease{}, errors.New("camera discovery interface is unknown or invalid")
+	}
+	if err := validateSystemInterface(interfaceName, c.interfaceByName); err != nil {
+		return Lease{}, err
 	}
 	if _, err := net.ParseMAC(mac); err != nil {
 		return Lease{}, errors.New("camera L2 evidence is missing")
@@ -109,6 +116,9 @@ func (c *Client) Ensure(ctx context.Context, cameraIP, mask, gateway, mac, inter
 				continue
 			}
 			if status.State != "temporary_network_ready" {
+				if status.Message != "" {
+					return Lease{}, fmt.Errorf("camera network helper: %s: %s", status.State, status.Message)
+				}
 				return Lease{}, fmt.Errorf("camera network helper: %s", status.State)
 			}
 			return Lease{Address: status.Address, Interface: status.Interface, Prefix: status.Prefix, ExpiresAt: status.ExpiresAt}, nil
@@ -168,6 +178,8 @@ type Helper struct {
 	AllowedInterfaces map[string]bool
 	Runner            Runner
 	Now               func() time.Time
+	LookPath          func(string) (string, error)
+	InterfaceByName   func(string) (*net.Interface, error)
 }
 type helperState struct {
 	Leases map[string]Status `json:"leases"`
@@ -180,12 +192,29 @@ func (h Helper) Process(ctx context.Context) error {
 	if h.Now == nil {
 		h.Now = time.Now
 	}
-	lock := filepath.Join(h.DataDir, "camera-network.lock")
-	if err := os.Mkdir(lock, 0o700); err != nil {
+	if h.LookPath == nil {
+		h.LookPath = exec.LookPath
+	}
+	if h.InterfaceByName == nil {
+		h.InterfaceByName = net.InterfaceByName
+	}
+	lockFD, err := unix.Open(filepath.Join(h.DataDir, "camera-network.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("open camera network helper lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(lockFD), "camera-network.lock")
+	defer lock.Close()
+	if err := lock.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure camera network helper lock: %w", err)
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return fmt.Errorf("lock camera network helper: %w", err)
 	}
-	defer os.Remove(lock)
-	data, err := os.ReadFile(filepath.Join(h.DataDir, "camera-network.request.json"))
+	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+	data, err := readRequestFile(filepath.Join(h.DataDir, "camera-network.request.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -193,11 +222,11 @@ func (h Helper) Process(ctx context.Context) error {
 		return errors.New("camera network request too large")
 	}
 	var req Request
-	if json.Unmarshal(data, &req) != nil {
-		return h.fail(req.ID, "helper_failed")
+	if err := json.Unmarshal(data, &req); err != nil {
+		return h.fail(req.ID, "helper_failed", "invalid request JSON")
 	}
 	if err := h.validate(req); err != nil {
-		return h.fail(req.ID, "helper_failed")
+		return h.fail(req.ID, "helper_failed", err.Error())
 	}
 	state := h.readState()
 	now := h.Now().UTC()
@@ -206,23 +235,41 @@ func (h Helper) Process(ctx context.Context) error {
 			delete(state.Leases, id)
 		}
 	}
+	if existing, ok := state.Leases[req.ID]; ok && existing.ExpiresAt.After(now) {
+		if existing.Interface != req.Interface || existing.Address != req.Address || existing.Prefix != req.Prefix {
+			return h.fail(req.ID, "helper_failed", "request ID conflicts with an existing lease")
+		}
+		return h.finish(state, existing)
+	}
 	if req.Operation == "remove" {
 		lease, ok := state.Leases[req.ID]
 		if !ok {
-			return h.fail(req.ID, "helper_failed")
+			return h.fail(req.ID, "helper_failed", "lease is not owned by helper")
 		}
-		if err := h.Runner.Run(ctx, "/usr/sbin/ip", "address", "del", fmt.Sprintf("%s/%d", lease.Address, lease.Prefix), "dev", lease.Interface); err != nil {
-			return h.fail(req.ID, "helper_failed")
+		ipCommand, err := h.command("ip")
+		if err != nil {
+			return h.fail(req.ID, "helper_failed", err.Error())
+		}
+		if err := h.Runner.Run(ctx, ipCommand, "address", "del", fmt.Sprintf("%s/%d", lease.Address, lease.Prefix), "dev", lease.Interface); err != nil {
+			return h.fail(req.ID, "helper_failed", "remove temporary address failed")
 		}
 		delete(state.Leases, req.ID)
 		return h.finish(state, Status{ID: req.ID, State: "expired"})
 	}
-	if err := h.Runner.Run(ctx, "/usr/sbin/arping", "-D", "-I", req.Interface, "-c", "2", "-w", "2", req.Address); err != nil {
-		return h.fail(req.ID, "address_conflict")
+	arpingCommand, err := h.command("arping")
+	if err != nil {
+		return h.fail(req.ID, "helper_failed", err.Error())
+	}
+	ipCommand, err := h.command("ip")
+	if err != nil {
+		return h.fail(req.ID, "helper_failed", err.Error())
+	}
+	if err := h.Runner.Run(ctx, arpingCommand, "-D", "-I", req.Interface, "-c", "2", "-w", "2", req.Address); err != nil {
+		return h.fail(req.ID, "address_conflict", "ARP duplicate-address detection found a conflict")
 	}
 	expires := now.Add(time.Duration(req.TTLSeconds) * time.Second)
-	if err := h.Runner.Run(ctx, "/usr/sbin/ip", "address", "add", fmt.Sprintf("%s/%d", req.Address, req.Prefix), "dev", req.Interface, "valid_lft", fmt.Sprint(req.TTLSeconds), "preferred_lft", fmt.Sprint(req.TTLSeconds)); err != nil {
-		return h.fail(req.ID, "helper_failed")
+	if err := h.Runner.Run(ctx, ipCommand, "address", "add", fmt.Sprintf("%s/%d", req.Address, req.Prefix), "dev", req.Interface, "valid_lft", fmt.Sprint(req.TTLSeconds), "preferred_lft", fmt.Sprint(req.TTLSeconds)); err != nil {
+		return h.fail(req.ID, "helper_failed", "add temporary address failed")
 	}
 	status := Status{ID: req.ID, State: "temporary_network_ready", Interface: req.Interface, Address: req.Address, Prefix: req.Prefix, ExpiresAt: expires}
 	state.Leases[req.ID] = status
@@ -233,11 +280,18 @@ func (h Helper) validate(r Request) error {
 	ip := net.ParseIP(r.Address).To4()
 	camera := net.ParseIP(r.CameraIP).To4()
 	mac, e := net.ParseMAC(r.CameraMAC)
-	if r.ID == "" || !h.AllowedInterfaces[r.Interface] || !validInterface(r.Interface) || r.Operation != "add" && r.Operation != "remove" || ip == nil || camera == nil || !ip.IsPrivate() || ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || r.Prefix < 1 || r.Prefix > 30 || e != nil || mac[0]&1 != 0 || r.TTLSeconds < 30 || r.TTLSeconds > 3600 {
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(r.ID) || !h.AllowedInterfaces[r.Interface] || !validInterface(r.Interface) || r.Operation != "add" && r.Operation != "remove" || ip == nil || camera == nil || !ip.IsPrivate() || ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || r.Prefix < 1 || r.Prefix > 30 || e != nil || mac[0]&1 != 0 || r.TTLSeconds < 30 || r.TTLSeconds > 3600 {
 		return errors.New("invalid camera network request")
 	}
+	if err := validateSystemInterface(r.Interface, h.InterfaceByName); err != nil {
+		return err
+	}
 	n := &net.IPNet{IP: camera.Mask(net.CIDRMask(r.Prefix, 32)), Mask: net.CIDRMask(r.Prefix, 32)}
-	if !n.Contains(ip) || ip.Equal(camera) {
+	broadcast := append(net.IP(nil), n.IP...)
+	for i := range broadcast {
+		broadcast[i] |= ^n.Mask[i]
+	}
+	if !n.Contains(ip) || ip.Equal(camera) || ip.Equal(n.IP) || ip.Equal(broadcast) {
 		return errors.New("temporary address outside camera subnet")
 	}
 	return nil
@@ -254,15 +308,54 @@ func (h Helper) readState() helperState {
 	}
 	return s
 }
-func (h Helper) fail(id, state string) error {
-	_ = atomicJSON(filepath.Join(h.DataDir, "camera-network.status.json"), Status{ID: id, State: state}, 0o644)
+func (h Helper) fail(id, state, message string) error {
+	_ = atomicJSON(filepath.Join(h.DataDir, "camera-network.status.json"), Status{ID: id, State: state, Message: message}, 0o600)
 	return errors.New(state)
 }
 func (h Helper) finish(state helperState, status Status) error {
 	if err := atomicJSON(filepath.Join(h.DataDir, "camera-network.leases.json"), state, 0o600); err != nil {
 		return err
 	}
-	return atomicJSON(filepath.Join(h.DataDir, "camera-network.status.json"), status, 0o644)
+	return atomicJSON(filepath.Join(h.DataDir, "camera-network.status.json"), status, 0o600)
+}
+
+func (h Helper) command(name string) (string, error) {
+	path, err := h.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("required command %s is not installed", name)
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("required command %s resolved to unsafe path", name)
+	}
+	return path, nil
+}
+
+func validateSystemInterface(name string, lookup func(string) (*net.Interface, error)) error {
+	iface, err := lookup(name)
+	if err != nil {
+		return errors.New("camera discovery interface does not exist")
+	}
+	if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+		return errors.New("camera discovery interface is loopback or down")
+	}
+	return nil
+}
+
+func readRequestFile(path string) ([]byte, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, os.NewSyscallError("open camera network request", err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("camera network request must be a private regular file")
+	}
+	return io.ReadAll(io.LimitReader(file, (16<<10)+1))
 }
 func atomicJSON(path string, value any, mode os.FileMode) error {
 	data, err := json.Marshal(value)

@@ -22,6 +22,7 @@ import (
 	"DronService/internal/deviceconfig"
 	"DronService/internal/ipcamera"
 	"DronService/internal/mediamtx"
+	"DronService/internal/starlink"
 	"DronService/internal/stream"
 	"DronService/internal/streampreview"
 	"DronService/internal/updater"
@@ -68,6 +69,10 @@ func main() {
 	dataDir := os.Getenv("DRONSERVICE_DATA_DIR")
 	if dataDir == "" {
 		dataDir = "/var/lib/dronservice"
+	}
+	starlinkService, err := starlink.NewService(dataDir)
+	if err != nil {
+		log.Fatalf("prepare Starlink monitor: %v", err)
 	}
 	applicationUpdater, err := updater.NewClient(updater.Config{
 		Repository:     os.Getenv("DRONSERVICE_UPDATE_REPOSITORY"),
@@ -158,7 +163,9 @@ func main() {
 	mux.HandleFunc("POST /api/update", applicationUpdateRequestHandler(applicationUpdater))
 	mux.HandleFunc("GET /assets/application-status.js", applicationStatusScriptHandler)
 	mux.HandleFunc("GET /assets/application.css", applicationStyleHandler)
-	mux.HandleFunc("GET /api/system/internet", internetStatusHandler)
+	mux.HandleFunc("GET /api/system/internet", internetStatusHandler(starlinkService))
+	mux.HandleFunc("POST /api/system/starlink/reboot", starlinkRebootHandler(starlinkService))
+	mux.HandleFunc("GET /api/starlink", starlinkStatusHandler(starlinkService))
 	mux.HandleFunc("GET /api/system/network", networkStatusHandler)
 	mux.HandleFunc("GET /api/streams", streamsHandler(streamService))
 	mux.HandleFunc("/api/stream-configs", streamConfigsHandler(streamService, streamSources, publicRTSPBase))
@@ -184,6 +191,7 @@ func main() {
 	mux.Handle("GET /devices", devicesPage)
 	mux.Handle("GET /streams", streamsPage)
 	mux.Handle("GET /ip-cameras", ipCamerasPage)
+	mux.HandleFunc("GET /starlink", starlinkPageHandler)
 	mux.HandleFunc("GET /zerotier", zeroTierPageHandler)
 
 	listenAddress := os.Getenv("DRONSERVICE_ADDR")
@@ -412,56 +420,33 @@ const devicesPageHTML = `<!doctype html>
   <script src="/assets/application-status.js" defer></script>
   <link rel="stylesheet" href="/assets/application.css">
   <title>DronService — список аналоговых камер</title>
-  <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    body { max-width: 1100px; margin: 40px auto; padding: 0 20px; background: #111827; color: #e5e7eb; }
-    .main-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 32px; padding: 10px; border: 1px solid #374151; border-radius: 12px; background: #1f2937; box-shadow: 0 8px 24px rgb(0 0 0 / 20%); }
-    .main-nav .brand { margin: 0 auto 0 6px; color: #f9fafb; font-weight: 700; letter-spacing: .02em; }
-    .main-nav a { padding: 9px 13px; border-radius: 8px; color: #cbd5e1; text-decoration: none; transition: background .15s, color .15s; }
-    .main-nav a:hover, .main-nav a:focus-visible { background: #374151; color: #fff; outline: none; }
-    .main-nav a.active { background: #2563eb; color: #fff; }
-    @media (max-width: 700px) { .main-nav { align-items: stretch; flex-direction: column; } .main-nav .brand { margin: 4px 8px 8px; } }
-    h1 { margin-bottom: 8px; }
-    .hint { color: #9ca3af; margin-bottom: 24px; }
-    table { width: 100%; border-collapse: collapse; background: #1f2937; }
-    th, td { padding: 12px; border-bottom: 1px solid #374151; text-align: left; vertical-align: top; }
-    th { color: #93c5fd; }
-    code { color: #a7f3d0; }
-    .error { color: #fca5a5; }
-    .empty { padding: 24px; background: #1f2937; border-radius: 8px; }
-    tbody tr { cursor: pointer; }
-    tbody tr:hover { background: #273449; }
-    dialog { width: min(560px, calc(100% - 40px)); border: 1px solid #4b5563; border-radius: 10px; background: #1f2937; color: #e5e7eb; }
-    dialog::backdrop { background: rgb(0 0 0 / 65%); }
-    dialog h2 { margin-top: 0; }
-    label { display: block; margin: 18px 0 6px; color: #bfdbfe; }
-    select, input { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #4b5563; border-radius: 6px; background: #111827; color: #e5e7eb; }
-    .actions { margin-top: 24px; text-align: right; }
-    button { padding: 9px 18px; border: 0; border-radius: 6px; cursor: pointer; } .toggle-cell{vertical-align:middle;text-align:center}.toggle{position:relative;display:inline-block;margin:0;width:42px;height:24px;padding:0;border:0;border-radius:24px;background:#4b5563;cursor:pointer;vertical-align:middle;transition:.2s}.toggle:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;border-radius:50%;background:#fff;transition:.2s}.toggle[aria-checked="true"]{background:#2563eb}.toggle[aria-checked="true"]:before{transform:translateX(18px)}.toggle[aria-readonly="true"]{cursor:default}.camera-name-row{display:flex;align-items:flex-end;gap:18px}.camera-name-field{flex:1}.media-toggle-label{display:flex;align-items:flex-start;flex-direction:column;gap:5px;margin:0 0 5px;white-space:nowrap}.media-toggle-label input{appearance:none;position:relative;width:42px;height:24px;padding:0;border:0;border-radius:24px;background:#4b5563;cursor:pointer;transition:.2s}.media-toggle-label input:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;border-radius:50%;background:#fff;transition:.2s}.media-toggle-label input:checked{background:#2563eb}.media-toggle-label input:checked:before{transform:translateX(18px)}@media(max-width:600px){.camera-name-row{align-items:stretch;flex-direction:column;gap:8px}.media-toggle-label{margin-top:0}}
-    .table-wrap{overflow-x:auto;border-radius:10px}.table-wrap table{min-width:1060px}.camera-row td{border-bottom:0!important}.stream-details-row{cursor:default;background:#172033}.stream-details-row:hover{background:#172033!important}.stream-details-row td{padding:8px 12px 12px!important;border-bottom:1px solid #4b5563!important}.stream-details{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px}.stream-detail{color:#cbd5e1;font-size:.84rem}.stream-detail strong{margin-right:5px;color:#93c5fd}.camera-link{display:inline-flex;align-items:center;justify-content:center;margin-left:6px;padding:5px 9px;border:1px solid #4b5563;color:#bfdbfe;font-size:12px;line-height:1.2}.preview-button{min-height:32px;white-space:nowrap}.preview-dialog{width:min(960px,calc(100% - 40px))}.preview-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.preview-header h2{margin:0}.preview-metadata{margin:12px 0 0;padding:9px 12px;border:1px solid #374151;border-radius:6px;background:#111827;color:#cbd5e1}.preview-metadata p{margin:3px 0}.preview-frame{display:block;width:100%;aspect-ratio:16/9;margin-top:12px;border:0;border-radius:8px;background:#000}.preview-status{min-height:1.5em;margin:10px 0 0;color:#cbd5e1}
-  </style>
 </head>
 <body>
-  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a class="active" href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/zerotier">ZeroTier</a></nav>
-  <div id="network-info" style="display:flex;align-items:center;gap:10px;margin:-22px 6px 28px;color:#9ca3af;font-size:.9rem"><span id="network-addresses">Сеть: получение адресов…</span><button id="update-app" type="button" hidden style="padding:5px 9px">Обновить</button><span id="update-app-state"></span></div>
-  <h1>Список аналоговых камер</h1>
+<div class="app-shell">
+<aside class="app-sidebar">
+  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a class="active" href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/zerotier">ZeroTier</a></nav>
+  <div id="network-info"><div id="network-addresses">Сеть: получение адресов…</div><button id="update-app" type="button" hidden style="padding:5px 9px">Обновить</button><span id="update-app-state"></span></div>
+</aside>
+<main class="app-main">
+  <div class="page-heading"><h1>Список аналоговых камер</h1></div>
   {{if .Devices}}
-  <div class="table-wrap"><table>
-    <thead><tr><th>Порт</th><th>Устройство</th><th class="toggle-cell">MediaMTX</th><th>Драйвер</th><th>Шина</th><th>Версия</th><th>Возможности</th><th>Действия</th></tr></thead>
-    <tbody id="devices-body">
+  <div class="camera-grid" id="devices-body">
     {{range .Devices}}
-      <tr class="camera-row" data-device-id="{{.ID}}" data-device-path="{{.Path}}" title="Двойной клик для выбора режима">
-        <td><code>{{.Path}}</code></td>
-        <td>{{if .ConfiguredName}}<strong>{{.ConfiguredName}}</strong><br>{{end}}{{if .Card}}{{.Card}}{{else}}{{.Name}}{{end}}{{if .Error}}<br><span class="error">{{.Error}}</span>{{end}}</td><td class="toggle-cell"><button type="button" class="toggle device-use-toggle" role="switch" aria-checked="{{if .Use}}true{{else}}false{{end}}" aria-readonly="true" title="Состояние использования в MediaMTX"></button></td>
-        <td>{{.Driver}}</td><td>{{.Bus}}</td><td>{{.Version}}</td>
-        <td>{{range $index, $value := .Capabilities}}{{if $index}}, {{end}}{{$value}}{{end}}</td><td>{{if .ConfiguredName}}<button type="button" data-delete-device="{{.ID}}" style="padding:6px 9px;background:#991b1b;color:#fff" aria-label="Удалить настройки камеры {{.ConfiguredName}}">Удалить</button>{{else}}—{{end}}</td>
-      </tr>
-      <tr class="stream-details-row" data-stream-details="{{.ID}}">
-        <td colspan="8"><div class="stream-details"><span class="stream-detail"><strong>Захват:</strong><span data-device-stream>{{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{.SelectedFormat}} · {{.SelectedResolution}} · {{.SelectedFPS}} FPS{{else}}Режим не настроен{{end}}</span><button type="button" class="camera-link preview-button" data-device-preview="{{.ID}}" aria-label="Открыть предпросмотр аналоговой камеры {{if .ConfiguredName}}{{.ConfiguredName}}{{else}}{{.Path}}{{end}}" {{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{else}}disabled title="Сначала выберите формат, разрешение и FPS"{{end}}>Просмотр ▶</button></span></div></td>
-      </tr>
+    <article class="camera-card" data-device-id="{{.ID}}" data-device-path="{{.Path}}" title="Двойной клик для выбора режима">
+      <div class="camera-card-header">
+        <div class="camera-card-title">
+          {{if .ConfiguredName}}<span class="camera-name">{{.ConfiguredName}}</span>{{else}}<span class="camera-name muted">Не настроена</span>{{end}}
+          <code class="camera-path">{{.Path}}</code>{{if .Error}}<span class="error">{{.Error}}</span>{{end}}
+        </div>
+        <div class="camera-card-controls">
+          <span class="mediamtx-badge {{if .Use}}enabled{{else}}disabled{{end}}" title="{{if .Use}}Используется в MediaMTX{{else}}Не используется в MediaMTX{{end}}">MediaMTX</span>
+        </div>
+      </div>
+      <div class="stream-details-panel"><span class="stream-chip"><strong>Захват</strong><span data-device-stream>{{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{.SelectedFormat}} · {{.SelectedResolution}} · {{.SelectedFPS}} FPS{{else}}Режим не настроен{{end}}</span><button type="button" class="btn-secondary-sm camera-link preview-button" data-device-preview="{{.ID}}" aria-label="Открыть предпросмотр аналоговой камеры {{if .ConfiguredName}}{{.ConfiguredName}}{{else}}{{.Path}}{{end}}" {{if and .SelectedFormat .SelectedResolution .SelectedFPS}}{{else}}disabled title="Сначала выберите формат, разрешение и FPS"{{end}}>Просмотр ▶</button></span></div>
+      <div class="camera-card-actions">{{if .ConfiguredName}}<button type="button" class="btn-danger-sm danger" data-delete-device="{{.ID}}" aria-label="Удалить настройки камеры {{.ConfiguredName}}">Удалить</button>{{else}}<span class="camera-meta">Настройки не сохранены</span>{{end}}</div>
+    </article>
     {{end}}
-    </tbody>
-  </table></div>
+  </div>
   {{else}}<p class="empty">V4L2-устройства не обнаружены.</p>{{end}}
   <dialog id="modes-dialog">
     <h2 id="dialog-title">Режимы камеры</h2>
@@ -521,9 +506,8 @@ const devicesPageHTML = `<!doctype html>
 
     async function openAnalogPreview(button) {
       const deviceID = button.dataset.devicePreview;
-      const details = button.closest('tr[data-stream-details]');
-      const row = details?.previousElementSibling;
-      const name = row?.querySelector('td:nth-child(2) strong')?.textContent?.trim() || row?.querySelector('td:nth-child(2)')?.textContent?.trim() || row?.querySelector('code')?.textContent?.trim() || 'Аналоговая камера';
+      const card = button.closest('.camera-card');
+      const name = card?.querySelector('.camera-name:not(.muted)')?.textContent?.trim() || card?.querySelector('.camera-path')?.textContent?.trim() || 'Аналоговая камера';
       const generation = ++previewRequestGeneration;
       let startedSession = null;
       previewTrigger = button;
@@ -612,7 +596,7 @@ const devicesPageHTML = `<!doctype html>
       dialog.showModal();
     }
 
-    const devicesBody=document.querySelector('#devices-body');devicesBody?.addEventListener('dblclick',event=>{if(event.target.closest('button'))return;const row=event.target.closest('tr[data-device-path]');if(row)openModes(row.dataset.devicePath).catch(error=>window.alert(error.message))});
+    const devicesBody=document.querySelector('#devices-body');devicesBody?.addEventListener('dblclick',event=>{if(event.target.closest('button'))return;const card=event.target.closest('.camera-card[data-device-path]');if(card)openModes(card.dataset.devicePath).catch(error=>window.alert(error.message))});
     devicesBody?.addEventListener('click', async event => {
       const deleteButton = event.target.closest('[data-delete-device]');
       if (deleteButton) {
@@ -673,9 +657,12 @@ const devicesPageHTML = `<!doctype html>
     });
     async function refreshDevices(){if(dialog.open||previewDialog.open)return;try{const html=await fetch('/devices',{cache:'no-store'}).then(r=>r.text());const next=new DOMParser().parseFromString(html,'text/html').querySelector('#devices-body');const current=document.querySelector('#devices-body');if(next&&current)current.replaceChildren(...next.children)}catch(error){}}
     const refreshTimer=window.setInterval(refreshDevices,5000);
-    function updateInternetStatus(){fetch('/api/system/internet').then(r=>{if(!r.ok)throw new Error('status unavailable');return r.json()}).then(s=>{const e=document.querySelector('#internet-status'),states={online:['есть','#86efac'],offline:['нет','#fca5a5'],unknown:['не удалось проверить','#fbbf24']},state=states[s.status]||states[s.online?'online':'unknown'];e.textContent='Интернет: '+state[0];e.style.color=state[1]}).catch(()=>{const e=document.querySelector('#internet-status');e.textContent='Интернет: статус недоступен';e.style.color='#9ca3af'}).finally(()=>setTimeout(updateInternetStatus,10000))}updateInternetStatus();function updateNetworkInfo(){fetch('/api/system/network').then(r=>{if(!r.ok)throw new Error('network unavailable');return r.json()}).then(s=>{const parts=['LAN: '+(s.lan?.join(', ')||'—'),'Wi-Fi: '+(s.wifi?.join(', ')||'—')];if(s.localName)parts.push('Имя: '+s.localName);document.querySelector('#network-addresses').textContent=parts.join(' · ')}).catch(()=>document.querySelector('#network-addresses').textContent='Сеть: адреса недоступны')}updateNetworkInfo();document.querySelectorAll('.main-nav a').forEach(link => {
+    function updateInternetStatus(){fetch('/api/system/internet').then(r=>{if(!r.ok)throw new Error('status unavailable');return r.json()}).then(s=>{const e=document.querySelector('#internet-status'),states={online:['есть','#86efac'],offline:['нет','#fca5a5'],unknown:['не удалось проверить','#fbbf24']},state=states[s.status]||states[s.online?'online':'unknown'],sl=s.starlink;if(sl?.internetViaStarlink){e.textContent='Starlink: ↓'+Number(sl.downlinkMbps||0).toFixed(2)+' ↑'+Number(sl.uplinkMbps||0).toFixed(2)+' Мбит/с · '+Number(sl.pingMs||s.pingMs||0).toFixed(1)+' мс';e.title='Подключение '+(sl.topology==='direct'?'напрямую к Starlink':'через роутер')+' · текущая скорость обмена'}else{e.textContent='Интернет: '+state[0]+(sl?.detected?' · Starlink найден':'')}e.style.color=state[1]}).catch(()=>{const e=document.querySelector('#internet-status');e.textContent='Интернет: статус недоступен';e.style.color='#9ca3af'}).finally(()=>setTimeout(updateInternetStatus,10000))}updateInternetStatus();
+    document.querySelectorAll('.main-nav a').forEach(link => {
       link.addEventListener('click', () => window.clearInterval(refreshTimer));
     });
   </script>
+</main>
+</div>
 </body>
 </html>`

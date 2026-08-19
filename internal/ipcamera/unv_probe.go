@@ -47,10 +47,14 @@ func ParseUNVProbeMatches(payload []byte, source *net.UDPAddr, interfaceName, me
 	if err != nil {
 		return nil, err
 	}
-	if !strings.HasSuffix(strings.TrimSpace(match.Action), unvProbeMatchesSuffix) {
+	if !isUNVProbeResponseAction(match.Action) {
 		return nil, fmt.Errorf("unexpected UNV Action %q", match.Action)
 	}
-	if !sameUNVMessageID(match.RelatesTo, messageID) {
+	if strings.TrimSpace(match.RelatesTo) == "" {
+		if strings.TrimSpace(match.Action) != unvProbeAction {
+			return nil, fmt.Errorf("UNV response has no RelatesTo")
+		}
+	} else if !sameUNVMessageID(match.RelatesTo, messageID) {
 		return nil, fmt.Errorf("UNV RelatesTo %q does not match request MessageID %q", strings.TrimSpace(match.RelatesTo), messageID)
 	}
 	records, err := decodeUNVDeviceRecords(payload)
@@ -72,6 +76,11 @@ func ParseUNVProbeMatches(payload []byte, source *net.UDPAddr, interfaceName, me
 		return nil, fmt.Errorf("UNV ProbeMatch has no device with an IP address")
 	}
 	return mergeDevices(devices), nil
+}
+
+func isUNVProbeResponseAction(action string) bool {
+	action = strings.TrimSpace(action)
+	return action == unvProbeAction || strings.HasSuffix(action, unvProbeMatchesSuffix)
 }
 
 type unvDeviceRecord struct {

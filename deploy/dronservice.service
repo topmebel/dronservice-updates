@@ -16,6 +16,7 @@ Environment=DRONSERVICE_DATA_DIR=/var/lib/dronservice
 Environment=DRONSERVICE_ADDR=:80
 Environment=MEDIAMTX_CONFIG_PATH=/usr/local/etc/mediamtx/mediamtx.yml
 EnvironmentFile=-/etc/dronservice/update.conf
+EnvironmentFile=-/etc/dronservice/dronservice.env
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=15s

@@ -52,3 +52,10 @@ func TestDiscoverWithTransportStopsWhenKnownDevicesRespond(t *testing.T) {
 		t.Fatalf("devices=%d calls=%d error=%v", len(devices), calls, err)
 	}
 }
+
+func TestDahuaDiscoveryResultKeepsReceivingInterface(t *testing.T) {
+	device := dahuaDiscoveredDevice(DahuaDevice{IP: net.ParseIP("192.168.1.108"), MAC: "e0:2e:fe:6a:6c:27"}, "eth0")
+	if device.InterfaceName != "eth0" {
+		t.Fatalf("InterfaceName=%q", device.InterfaceName)
+	}
+}

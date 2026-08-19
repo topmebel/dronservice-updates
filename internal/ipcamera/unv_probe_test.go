@@ -70,6 +70,36 @@ func TestParseUNVProbeMatchUsesDefaultHTTPPort(t *testing.T) {
 	}
 }
 
+func TestParseUNVProbeMatchAcceptsFirmwareProbeAction(t *testing.T) {
+	const messageID = "urn:uuid:firmware-probe-action"
+	payload := []byte(`<Envelope><Action>` + unvProbeAction + `</Action><RelatesTo>` + messageID + `</RelatesTo><Scopes>onvif://www.onvif.org/macaddr/88263f7e7dda onvif://www.onvif.org/hardware/IPC3614LE</Scopes><XAddrs>http://192.168.4.107/</XAddrs></Envelope>`)
+	device, err := ParseUNVProbeMatch(payload, nil, "eth0", messageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.MAC != "88:26:3f:7e:7d:da" || !device.IP.Equal(net.ParseIP("192.168.4.107")) || device.Model != "IPC3614LE" {
+		t.Fatalf("device = %+v", device)
+	}
+}
+
+func TestParseUNVProbeMatchAcceptsFirmwareResponseWithoutRelatesTo(t *testing.T) {
+	payload := []byte(`<Envelope><Action>` + unvProbeAction + `</Action><Scopes>onvif://www.onvif.org/macaddr/88263f7e7dda onvif://www.onvif.org/hardware/IPC3614LE</Scopes><XAddrs>http://192.168.4.107/</XAddrs></Envelope>`)
+	device, err := ParseUNVProbeMatch(payload, nil, "eth0", "urn:uuid:request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.MAC != "88:26:3f:7e:7d:da" || !device.IP.Equal(net.ParseIP("192.168.4.107")) {
+		t.Fatalf("device = %+v", device)
+	}
+}
+
+func TestParseUNVProbeMatchRejectsStandardResponseWithoutRelatesTo(t *testing.T) {
+	payload := []byte(`<Envelope><Action>x/UniviewProbeMatches</Action><Scopes>onvif://www.onvif.org/macaddr/88263f7e7dda</Scopes><XAddrs>http://192.168.4.107/</XAddrs></Envelope>`)
+	if _, err := ParseUNVProbeMatch(payload, nil, "eth0", "urn:uuid:request"); err == nil || !strings.Contains(err.Error(), "no RelatesTo") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestParseUNVProbeMatchRejectsUnrelatedResponse(t *testing.T) {
 	payload := []byte(`<Envelope><Action>x/UniviewProbeMatches</Action><RelatesTo>urn:uuid:other</RelatesTo><XAddrs>http://192.168.4.107/</XAddrs></Envelope>`)
 	if _, err := ParseUNVProbeMatch(payload, nil, "eth0", "urn:uuid:request"); err == nil || !strings.Contains(err.Error(), "RelatesTo") {
