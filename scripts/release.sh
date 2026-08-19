@@ -77,6 +77,21 @@ done
 )
 
 test -r "$key_file"
+
+if ! command -v gh >/dev/null 2>&1; then
+  export PATH="/mnt/c/Program Files/GitHub CLI:$PATH"
+fi
+gh_cmd=""
+if command -v gh >/dev/null 2>&1; then
+  gh_cmd=gh
+elif [ -x "/mnt/c/Program Files/GitHub CLI/gh.exe" ]; then
+  gh_cmd="/mnt/c/Program Files/GitHub CLI/gh.exe"
+fi
+if [ -z "$gh_cmd" ]; then
+  echo "gh CLI not found" >&2
+  exit 127
+fi
+
 openssl dgst -sha256 -sign "$key_file" \
   -out "$workdir/dronservice-linux-arm64.sig" "$workdir/dronservice-linux-arm64"
 openssl dgst -sha256 -sign "$key_file" \
@@ -90,7 +105,7 @@ cat > "$notes_file" <<EOF
 - RTSP-пути, предпросмотр и редактирование стримов работают из карточек.
 EOF
 
-gh release create "$version" \
+"$gh_cmd" release create "$version" \
   "$workdir"/dronservice-linux-arm64 \
   "$workdir"/dronservice-linux-arm64.sig \
   "$workdir"/dronservice-camera-network-helper \
