@@ -86,10 +86,8 @@ notes_file="$workdir/release-notes.md"
 cat > "$notes_file" <<EOF
 ## DronService ${version}
 
-- Страница Starlink с историей скорости и пинга.
-- Списки камер переведены на карточки вместо таблиц.
-- UNV: исправлено обнаружение прошивок без RelatesTo и чтение битрейта через LAPI DetailInfos.
-- UI: бейдж MediaMTX, выравнивание кнопки предпросмотра, улучшенные отступы.
+- Страница MediaMTX переведена на карточный layout, как у камер.
+- RTSP-пути, предпросмотр и редактирование стримов работают из карточек.
 EOF
 
 gh release create "$version" \
