@@ -78,9 +78,25 @@ func TestApplicationUpdaterVerifiesAndRollsBackRelease(t *testing.T) {
 		`rollback`,
 		`/api/health`,
 		`/api/version`,
+		`dronservice_health_base_url`,
+		`migrate_local_dronservice_settings`,
+		`migrate-local-settings.sh`,
+		`invalid-runtime-user`,
+		`migrate-local-settings.sh" ] && [ -r /usr/local/libexec/dronservice-migrate-local-settings`,
 	} {
 		if !strings.Contains(script, fragment) {
 			t.Errorf("update-dronservice.sh does not contain %q", fragment)
+		}
+	}
+	migrateScript := readDeploymentFile(t, "migrate-local-settings.sh")
+	for _, fragment := range []string{
+		`dronservice.service.d`,
+		`/etc/dronservice/dronservice.env`,
+		`dronservice_health_base_url`,
+		`dronservice_runtime_account`,
+	} {
+		if !strings.Contains(migrateScript, fragment) {
+			t.Errorf("migrate-local-settings.sh does not contain %q", fragment)
 		}
 	}
 }
@@ -92,7 +108,7 @@ func TestInstallerCreatesWritablePathsBeforeStartingService(t *testing.T) {
 	if createState < 0 || startService < 0 || createState >= startService {
 		t.Fatal("installer must create service directories before starting DronService")
 	}
-	for _, required := range []string{"aarch64|arm64", "id admin", "dronservice-mediamtx-install.path", "/api/version"} {
+	for _, required := range []string{"aarch64|arm64", "id admin", "dronservice-mediamtx-install.path", "/api/version", "migrate-local-settings.sh", "dronservice_health_base_url"} {
 		if !strings.Contains(script, required) {
 			t.Errorf("installer lacks production invariant %q", required)
 		}

@@ -1,0 +1,7 @@
+# Site-specific systemd overrides for DronService.
+# Copy to /etc/systemd/system/dronservice.service.d/local.conf
+# This file is never replaced by release updates.
+
+[Service]
+# User=admin
+# Group=admin

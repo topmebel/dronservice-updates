@@ -23,6 +23,7 @@ fi
 binary=$1
 repository=$2
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "${script_dir}/migrate-local-settings.sh"
 helper_binary="$(dirname -- "$binary")/dronservice-camera-network-helper"
 [ -x "$helper_binary" ] || { echo "missing dronservice-camera-network-helper next to application binary" >&2; exit 2; }
 version=$("$binary" --version)
@@ -39,7 +40,15 @@ install -o root -g root -m 0755 "$helper_binary" /usr/local/libexec/dronservice-
 helper_owner=$(stat -c '%U:%G' /usr/local/libexec/dronservice-camera-network-helper)
 helper_mode=$(stat -c '%a' /usr/local/libexec/dronservice-camera-network-helper)
 [ "$helper_owner" = "root:root" ] && [ "$helper_mode" = "755" ] || { echo "invalid camera network helper ownership or mode: $helper_owner $helper_mode" >&2; exit 1; }
+existing_unit=/etc/systemd/system/dronservice.service
+if [ -e "$existing_unit" ]; then
+	temp_unit=$(mktemp)
+	cp -p "$existing_unit" "$temp_unit"
+	migrate_local_dronservice_settings "$temp_unit"
+	rm -f "$temp_unit"
+fi
 install -o root -g root -m 0755 "${script_dir}/update-dronservice.sh" /usr/local/libexec/dronservice-update
+install -o root -g root -m 0755 "${script_dir}/migrate-local-settings.sh" /usr/local/libexec/dronservice-migrate-local-settings
 install -o root -g root -m 0755 "${script_dir}/install-mediamtx.sh" /usr/local/libexec/dronservice-install-mediamtx
 install -o root -g root -m 0644 "${script_dir}/dronservice-release.pub" /usr/local/etc/dronservice-release.pub
 install -o root -g root -m 0644 "${script_dir}/dronservice.service" /etc/systemd/system/dronservice.service
@@ -67,6 +76,9 @@ if [ ! -e /etc/dronservice/update.conf ]; then
 		"DRONSERVICE_UPDATE_REPOSITORY=${repository}" \
 		'DRONSERVICE_UPDATE_PUBLIC_KEY=/usr/local/etc/dronservice-release.pub' > /etc/dronservice/update.conf
 	chmod 0644 /etc/dronservice/update.conf
+fi
+if [ ! -e /etc/dronservice/dronservice.env ] && [ -e "${script_dir}/dronservice.env.example" ]; then
+	install -o root -g root -m 0644 "${script_dir}/dronservice.env.example" /etc/dronservice/dronservice.env
 fi
 
 next_current=/usr/local/lib/dronservice/.current-bootstrap
@@ -97,10 +109,11 @@ case "$helper_caps_upper" in *CAP_NET_ADMIN*CAP_NET_RAW*|*CAP_NET_RAW*CAP_NET_AD
 systemctl enable dronservice.service
 systemctl restart dronservice.service
 
+health_base=$(dronservice_health_base_url)
 attempt=1
 while [ "$attempt" -le 30 ]; do
-	if curl --fail --silent http://127.0.0.1/api/health >/dev/null 2>&1 && \
-		curl --fail --silent http://127.0.0.1/api/version | grep -Fq "\"version\":\"${version}\""; then
+	if curl --fail --silent "${health_base}/api/health" >/dev/null 2>&1 && \
+		curl --fail --silent "${health_base}/api/version" | grep -Fq "\"version\":\"${version}\""; then
 		exit 0
 	fi
 	sleep 1

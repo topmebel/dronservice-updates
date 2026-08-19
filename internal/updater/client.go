@@ -28,6 +28,9 @@ const (
 	StateSucceeded   = "succeeded"
 	StateFailed      = "failed"
 
+	DisabledReasonRepositoryNotConfigured = "repository-not-configured"
+	DisabledReasonReleaseCheckFailed      = "release-check-failed"
+
 	releaseCacheTTL      = 15 * time.Minute
 	releaseErrorCacheTTL = time.Minute
 )
@@ -62,6 +65,7 @@ type Status struct {
 	ReleaseNotes    string `json:"releaseNotes,omitempty"`
 	ReleaseURL      string `json:"releaseUrl,omitempty"`
 	CheckFailed     bool   `json:"checkFailed,omitempty"`
+	DisabledReason  string `json:"disabledReason,omitempty"`
 	Message         string `json:"message,omitempty"`
 	UpdatedAt       string `json:"updatedAt,omitempty"`
 }
@@ -110,12 +114,14 @@ func (c *Client) Status(ctx context.Context) Status {
 		status.Installing = true
 	}
 	if !status.Enabled {
+		status.DisabledReason = DisabledReasonRepositoryNotConfigured
 		return status
 	}
 
 	release, err := c.latestReleaseCached(ctx)
 	if err != nil {
 		status.CheckFailed = true
+		status.DisabledReason = DisabledReasonReleaseCheckFailed
 		return status
 	}
 	status.LatestVersion = release.Tag

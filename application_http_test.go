@@ -40,6 +40,9 @@ func TestUpdateStatusIsDisabledWithoutRepository(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"enabled":false`) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
+	if !strings.Contains(response.Body.String(), `"disabledReason":"repository-not-configured"`) {
+		t.Fatalf("response = %s", response.Body.String())
+	}
 }
 
 func TestApplicationStatusScriptUsesManualUpdateOnly(t *testing.T) {
@@ -48,6 +51,8 @@ func TestApplicationStatusScriptUsesManualUpdateOnly(t *testing.T) {
 		`fetch('/api/update',{method:'POST'})`,
 		`confirm('Установить новую версию DronService?`,
 		`button.hidden=!status.updateAvailable||status.installing`,
+		`repository-not-configured`,
+		`status.message?(stateLabels[status.state]`,
 		`updateNetworkInfo()`,
 		`networkAddresses.innerHTML`,
 	} {

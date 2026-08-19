@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -82,6 +83,9 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("prepare application updater: %v", err)
+	}
+	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" && strings.TrimSpace(os.Getenv("DRONSERVICE_UPDATE_REPOSITORY")) == "" {
+		log.Printf("application updates disabled: configure DRONSERVICE_UPDATE_REPOSITORY in /etc/dronservice/update.conf")
 	}
 	deviceStore, err := deviceconfig.NewStore(dataDir)
 	if err != nil {

@@ -36,6 +36,7 @@ for file in \
   deployment-manifest.json \
   install-dronservice.sh \
   update-dronservice.sh \
+  migrate-local-settings.sh \
   install-mediamtx.sh \
   install-video-runtime.sh \
   dronservice.service \
@@ -61,6 +62,7 @@ done
     deployment-manifest.json \
     install-dronservice.sh \
     update-dronservice.sh \
+    migrate-local-settings.sh \
     install-mediamtx.sh \
     install-video-runtime.sh \
     dronservice.service \
@@ -101,8 +103,9 @@ notes_file="$workdir/release-notes.md"
 cat > "$notes_file" <<EOF
 ## DronService ${version}
 
-- Без изменений в приложении относительно v0.7.1.
-- Исправлен scripts/release.sh: GitHub CLI находится в WSL через gh.exe на Windows.
+- Исправлено обновление на хостах без пользователя admin (например rovertech).
+- Локальные настройки (порт, HLS URL, пользователь systemd) сохраняются в dronservice.env и drop-in.
+- Health-check updater учитывает DRONSERVICE_ADDR; в UI показывается текст ошибки обновления.
 EOF
 
 "$gh_cmd" release create "$version" \
@@ -114,6 +117,7 @@ EOF
   "$workdir"/deployment-manifest.json \
   "$workdir"/install-dronservice.sh \
   "$workdir"/update-dronservice.sh \
+  "$workdir"/migrate-local-settings.sh \
   "$workdir"/install-mediamtx.sh \
   "$workdir"/install-video-runtime.sh \
   "$workdir"/dronservice.service \

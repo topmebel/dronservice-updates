@@ -9,7 +9,7 @@ checksums=checksums.sha256
 signature=dronservice-linux-arm64.sig
 checksums_signature=checksums.sha256.sig
 manifest=deployment-manifest.json
-deployment_assets="dronservice-camera-network-helper install-dronservice.sh update-dronservice.sh install-mediamtx.sh install-video-runtime.sh dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path dronservice-camera-network.service dronservice-camera-network.path dronservice-camera-network.conf mediamtx.service mediamtx.yml dronservice-release.pub"
+deployment_assets="dronservice-camera-network-helper install-dronservice.sh update-dronservice.sh migrate-local-settings.sh install-mediamtx.sh install-video-runtime.sh dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path dronservice-camera-network.service dronservice-camera-network.path dronservice-camera-network.conf mediamtx.service mediamtx.yml dronservice-release.pub"
 work_dir=
 previous_target=
 switched=false
@@ -36,6 +36,7 @@ rollback() {
 	if [ "$deployment_changed" = true ]; then
 		for entry in \
 			"update-dronservice.sh:/usr/local/libexec/dronservice-update" \
+			"migrate-local-settings.sh:/usr/local/libexec/dronservice-migrate-local-settings" \
 			"install-mediamtx.sh:/usr/local/libexec/dronservice-install-mediamtx" \
 			"dronservice.service:/etc/systemd/system/dronservice.service" \
 			"dronservice-update.service:/etc/systemd/system/dronservice-update.service" \
@@ -115,8 +116,14 @@ done
 write_status verifying "$version" verifying || fail_update status-write-failed
 openssl dgst -sha256 -verify "$public_key" -signature "${work_dir}/${checksums_signature}" "${work_dir}/${checksums}" >/dev/null 2>&1 || fail_update checksums-signature-mismatch
 for file in "$asset" "$signature" "$manifest" $deployment_assets; do
-	curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
-		"${base_url}/${file}" --output "${work_dir}/${file}" || fail_update download-failed
+	if ! curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+		"${base_url}/${file}" --output "${work_dir}/${file}"; then
+		if [ "$file" = "migrate-local-settings.sh" ] && [ -r /usr/local/libexec/dronservice-migrate-local-settings ]; then
+			cp /usr/local/libexec/dronservice-migrate-local-settings "${work_dir}/${file}" || fail_update download-failed
+			continue
+		fi
+		fail_update download-failed
+	fi
 done
 expected_checksum=$(awk -v name="$asset" '$2 == name || $2 == "*" name {print $1}' "${work_dir}/${checksums}")
 printf '%s\n' "$expected_checksum" | grep -Eq '^[0-9a-fA-F]{64}$' || fail_update invalid-checksum
@@ -124,7 +131,12 @@ printf '%s  %s\n' "$expected_checksum" "${work_dir}/${asset}" | sha256sum --chec
 openssl dgst -sha256 -verify "$public_key" -signature "${work_dir}/${signature}" "${work_dir}/${asset}" >/dev/null 2>&1 || fail_update signature-mismatch
 for file in "$manifest" $deployment_assets; do
 	expected_asset_checksum=$(awk -v name="$file" '$2 == name || $2 == "*" name {print $1}' "${work_dir}/${checksums}")
-	printf '%s\n' "$expected_asset_checksum" | grep -Eq '^[0-9a-fA-F]{64}$' || fail_update invalid-deployment-checksum
+	if ! printf '%s\n' "$expected_asset_checksum" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+		if [ "$file" = "migrate-local-settings.sh" ] && [ -r "${work_dir}/${file}" ]; then
+			continue
+		fi
+		fail_update invalid-deployment-checksum
+	fi
 	printf '%s  %s\n' "$expected_asset_checksum" "${work_dir}/${file}" | sha256sum --check --status || fail_update deployment-checksum-mismatch
 done
 grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*1([,[:space:]}]|$)' "${work_dir}/${manifest}" || fail_update unsupported-deployment-schema
@@ -137,6 +149,12 @@ available_kb=$(df -Pk /usr/local/lib/dronservice | awk 'NR == 2 {print $4}')
 [ "$available_kb" -ge "$required_kb" ] || fail_update insufficient-disk-space
 
 write_status installing "$version" installing || fail_update status-write-failed
+. "${work_dir}/migrate-local-settings.sh"
+migrate_local_dronservice_settings /etc/systemd/system/dronservice.service
+ensure_update_configuration
+runtime_account=$(dronservice_runtime_account) || fail_update invalid-runtime-user
+service_user=${runtime_account%%:*}
+service_group=${runtime_account#*:}
 release_dir="/usr/local/lib/dronservice/releases/${version}"
 previous_target=$(readlink -f /usr/local/bin/dronservice) || fail_update current-release-unavailable
 install -d -o root -g root -m 0755 "$release_dir" || fail_update create-release-directory-failed
@@ -148,11 +166,12 @@ else
 fi
 
 install -d -o root -g root -m 0755 "${work_dir}/deployment-backup" /usr/local/libexec /etc/systemd/system /usr/local/etc || fail_update create-deployment-directory-failed
-install -d -o admin -g admin -m 0750 /var/lib/dronservice || fail_update create-camera-state-directory-failed
+install -d -o "$service_user" -g "$service_group" -m 0750 /var/lib/dronservice || fail_update create-camera-state-directory-failed
 [ ! -d /var/lib/dronservice/camera-network.lock ] || rmdir /var/lib/dronservice/camera-network.lock || fail_update migrate-camera-network-lock-failed
-install -d -o admin -g admin -m 0750 /usr/local/etc/mediamtx || fail_update create-mediamtx-directory-failed
+install -d -o "$service_user" -g "$service_group" -m 0750 /usr/local/etc/mediamtx || fail_update create-mediamtx-directory-failed
 for entry in \
 	"update-dronservice.sh:/usr/local/libexec/dronservice-update:0755" \
+	"migrate-local-settings.sh:/usr/local/libexec/dronservice-migrate-local-settings:0755" \
 	"install-mediamtx.sh:/usr/local/libexec/dronservice-install-mediamtx:0755" \
 	"dronservice.service:/etc/systemd/system/dronservice.service:0644" \
 	"dronservice-update.service:/etc/systemd/system/dronservice-update.service:0644" \
@@ -168,6 +187,7 @@ for entry in \
 done
 deployment_changed=true
 install -o root -g root -m 0755 "${work_dir}/update-dronservice.sh" /usr/local/libexec/dronservice-update || fail_update install-deployment-failed
+install -o root -g root -m 0755 "${work_dir}/migrate-local-settings.sh" /usr/local/libexec/dronservice-migrate-local-settings || fail_update install-deployment-failed
 install -o root -g root -m 0755 "${work_dir}/install-mediamtx.sh" /usr/local/libexec/dronservice-install-mediamtx || fail_update install-deployment-failed
 install -o root -g root -m 0755 "${work_dir}/dronservice-camera-network-helper" /usr/local/libexec/dronservice-camera-network-helper || fail_update install-deployment-failed
 for name in dronservice.service dronservice-update.service dronservice-update.path dronservice-mediamtx-install.service dronservice-mediamtx-install.path dronservice-camera-network.service dronservice-camera-network.path mediamtx.service; do
@@ -175,7 +195,7 @@ for name in dronservice.service dronservice-update.service dronservice-update.pa
 done
 if [ ! -e /etc/dronservice/camera-network.conf ]; then install -o root -g root -m 0644 "${work_dir}/dronservice-camera-network.conf" /etc/dronservice/camera-network.conf || fail_update install-deployment-failed; fi
 if [ ! -e /usr/local/etc/mediamtx/mediamtx.yml ]; then
-	if [ -e /usr/local/etc/mediamtx.yml ]; then install -o admin -g admin -m 0660 /usr/local/etc/mediamtx.yml /usr/local/etc/mediamtx/mediamtx.yml || fail_update migrate-mediamtx-config-failed; else install -o admin -g admin -m 0660 "${work_dir}/mediamtx.yml" /usr/local/etc/mediamtx/mediamtx.yml || fail_update install-mediamtx-config-failed; fi
+	if [ -e /usr/local/etc/mediamtx.yml ]; then install -o "$service_user" -g "$service_group" -m 0660 /usr/local/etc/mediamtx.yml /usr/local/etc/mediamtx/mediamtx.yml || fail_update migrate-mediamtx-config-failed; else install -o "$service_user" -g "$service_group" -m 0660 "${work_dir}/mediamtx.yml" /usr/local/etc/mediamtx/mediamtx.yml || fail_update install-mediamtx-config-failed; fi
 fi
 systemctl daemon-reload || fail_update daemon-reload-failed
 systemctl enable --now dronservice-update.path dronservice-mediamtx-install.path dronservice-camera-network.path >/dev/null 2>&1 || fail_update enable-deployment-units-failed
@@ -191,11 +211,12 @@ switched=true
 
 write_status restarting "$version" restarting || fail_update status-write-failed
 systemctl restart dronservice.service || fail_update restart-failed
+health_base=$(dronservice_health_base_url)
 healthy=false
 attempt=1
 while [ "$attempt" -le 30 ]; do
-	if curl --fail --silent --show-error http://127.0.0.1/api/health >/dev/null 2>&1 && \
-		curl --fail --silent --show-error http://127.0.0.1/api/version | grep -Fq "\"version\":\"${version}\""; then
+	if curl --fail --silent --show-error "${health_base}/api/health" >/dev/null 2>&1 && \
+		curl --fail --silent --show-error "${health_base}/api/version" | grep -Fq "\"version\":\"${version}\""; then
 		healthy=true
 		break
 	fi

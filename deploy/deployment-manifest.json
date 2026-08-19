@@ -5,6 +5,7 @@
     "dronservice-camera-network-helper",
     "install-dronservice.sh",
     "update-dronservice.sh",
+    "migrate-local-settings.sh",
     "install-mediamtx.sh",
     "install-video-runtime.sh",
     "dronservice.service",

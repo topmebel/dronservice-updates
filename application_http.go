@@ -58,7 +58,10 @@ async function load(){
     versionElement.textContent=version.version||'dev';
     button.hidden=!status.updateAvailable||status.installing;
     button.textContent=status.latestVersion?'Обновить до '+status.latestVersion:'Обновить';
-    stateElement.textContent=status.installing||status.state==='failed'?(stateLabels[status.state]||'Обновление…'):'';
+    if(status.installing||status.state==='failed'){stateElement.textContent=status.message?(stateLabels[status.state]||'Обновление…')+': '+status.message:(stateLabels[status.state]||'Обновление…')}
+    else if(!status.enabled&&status.disabledReason==='repository-not-configured'){stateElement.textContent='Обновления не настроены'}
+    else if(status.checkFailed){stateElement.textContent='Не удалось проверить релиз'}
+    else{stateElement.textContent=''}
     if(status.installing){polling=true;setTimeout(load,2000);return}
     if(polling&&status.state==='succeeded'){polling=false;setTimeout(()=>location.reload(),700)}
   }catch(error){if(polling)setTimeout(load,2000)}

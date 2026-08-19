@@ -119,6 +119,17 @@ func TestStatusDoesNotOfferDowngrade(t *testing.T) {
 	}
 }
 
+func TestStatusReportsDisabledReasonWithoutRepository(t *testing.T) {
+	client, err := NewClient(Config{CurrentVersion: "v0.1.0", RequestPath: filepath.Join(t.TempDir(), "request")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := client.Status(context.Background())
+	if status.Enabled || status.DisabledReason != DisabledReasonRepositoryNotConfigured {
+		t.Fatalf("Status() = %+v", status)
+	}
+}
+
 func TestNewClientRejectsInvalidRepository(t *testing.T) {
 	if _, err := NewClient(Config{Repository: "owner/repo;reboot", CurrentVersion: "v0.1.0"}); err == nil {
 		t.Fatal("NewClient() error = nil")
