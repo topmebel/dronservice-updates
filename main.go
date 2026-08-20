@@ -22,6 +22,7 @@ import (
 	"DronService/internal/cameraproxy"
 	"DronService/internal/deviceconfig"
 	"DronService/internal/ipcamera"
+	"DronService/internal/mavlink"
 	"DronService/internal/mediamtx"
 	"DronService/internal/starlink"
 	"DronService/internal/stream"
@@ -90,6 +91,14 @@ func main() {
 	deviceStore, err := deviceconfig.NewStore(dataDir)
 	if err != nil {
 		log.Fatalf("prepare device configuration: %v", err)
+	}
+	mavlinkStore, err := mavlink.NewStore(dataDir)
+	if err != nil {
+		log.Fatalf("prepare MAVLink configuration: %v", err)
+	}
+	mavlinkService, err := mavlink.NewService(mavlinkStore)
+	if err != nil {
+		log.Fatalf("prepare MAVLink service: %v", err)
 	}
 	devicesPage, err := newDevicesPageHandler(deviceScanner, deviceStore)
 	if err != nil {
@@ -171,6 +180,8 @@ func main() {
 	mux.HandleFunc("POST /api/system/starlink/reboot", starlinkRebootHandler(starlinkService))
 	mux.HandleFunc("GET /api/starlink", starlinkStatusHandler(starlinkService))
 	mux.HandleFunc("GET /api/system/network", networkStatusHandler)
+	mux.HandleFunc("/api/flight-controller/config", flightControllerConfigHandler(mavlinkService))
+	mux.HandleFunc("GET /api/flight-controller/status", flightControllerStatusHandler(mavlinkService))
 	mux.HandleFunc("GET /api/streams", streamsHandler(streamService))
 	mux.HandleFunc("/api/stream-configs", streamConfigsHandler(streamService, streamSources, publicRTSPBase))
 	mux.HandleFunc("/api/mediamtx/install", mediaMTXInstallHandler(mediaMTXInstaller))
@@ -196,6 +207,7 @@ func main() {
 	mux.Handle("GET /streams", streamsPage)
 	mux.Handle("GET /ip-cameras", ipCamerasPage)
 	mux.HandleFunc("GET /starlink", starlinkPageHandler)
+	mux.HandleFunc("GET /flight-controller", flightControllerPageHandler)
 	mux.HandleFunc("GET /zerotier", zeroTierPageHandler)
 
 	listenAddress := os.Getenv("DRONSERVICE_ADDR")
@@ -215,6 +227,7 @@ func main() {
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go ipCameraService.Monitor(shutdownSignal, monitorInterval(os.Getenv("DRONSERVICE_CAMERA_MONITOR_INTERVAL")))
+	go mavlinkService.Run(shutdownSignal)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -428,7 +441,7 @@ const devicesPageHTML = `<!doctype html>
 <body>
 <div class="app-shell">
 <aside class="app-sidebar">
-  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a class="active" href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/zerotier">ZeroTier</a></nav>
+  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a class="active" href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/flight-controller">Автопилот</a><a href="/zerotier">ZeroTier</a></nav>
   <div id="network-info"><div id="network-addresses">Сеть: получение адресов…</div><button id="update-app" type="button" hidden style="padding:5px 9px">Обновить</button><span id="update-app-state"></span></div>
 </aside>
 <main class="app-main">

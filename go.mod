@@ -4,12 +4,16 @@ go 1.26.6
 
 require (
 	github.com/b0ch3nski/go-starlink v0.0.0-20260609190024-a9e1903d23c9
+	github.com/bluenviron/gomavlib/v3 v3.3.5
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 )
 
 require (
+	github.com/pion/logging v0.2.2 // indirect
+	github.com/pion/transport/v2 v2.2.10 // indirect
+	go.bug.st/serial v1.7.1 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
 	google.golang.org/grpc v1.64.1 // indirect
