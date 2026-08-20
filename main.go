@@ -180,6 +180,8 @@ func main() {
 	mux.HandleFunc("POST /api/system/starlink/reboot", starlinkRebootHandler(starlinkService))
 	mux.HandleFunc("GET /api/starlink", starlinkStatusHandler(starlinkService))
 	mux.HandleFunc("GET /api/system/network", networkStatusHandler)
+	mux.HandleFunc("/api/telemetry/config", flightControllerConfigHandler(mavlinkService))
+	mux.HandleFunc("GET /api/telemetry/status", flightControllerStatusHandler(mavlinkService))
 	mux.HandleFunc("/api/flight-controller/config", flightControllerConfigHandler(mavlinkService))
 	mux.HandleFunc("GET /api/flight-controller/status", flightControllerStatusHandler(mavlinkService))
 	mux.HandleFunc("GET /api/streams", streamsHandler(streamService))
@@ -207,7 +209,10 @@ func main() {
 	mux.Handle("GET /streams", streamsPage)
 	mux.Handle("GET /ip-cameras", ipCamerasPage)
 	mux.HandleFunc("GET /starlink", starlinkPageHandler)
-	mux.HandleFunc("GET /flight-controller", flightControllerPageHandler)
+	mux.HandleFunc("GET /telemetry", flightControllerPageHandler)
+	mux.HandleFunc("GET /flight-controller", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/telemetry", http.StatusMovedPermanently)
+	})
 	mux.HandleFunc("GET /zerotier", zeroTierPageHandler)
 
 	listenAddress := os.Getenv("DRONSERVICE_ADDR")
@@ -441,7 +446,7 @@ const devicesPageHTML = `<!doctype html>
 <body>
 <div class="app-shell">
 <aside class="app-sidebar">
-  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a class="active" href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/flight-controller">Автопилот</a><a href="/zerotier">ZeroTier</a></nav>
+  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a class="active" href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/telemetry">Телеметрия</a><a href="/zerotier">ZeroTier</a></nav>
   <div id="network-info"><div id="network-addresses">Сеть: получение адресов…</div><button id="update-app" type="button" hidden style="padding:5px 9px">Обновить</button><span id="update-app-state"></span></div>
 </aside>
 <main class="app-main">

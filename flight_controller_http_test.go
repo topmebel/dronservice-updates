@@ -14,10 +14,13 @@ import (
 
 func TestFlightControllerPageShowsTelemetryAndConfig(t *testing.T) {
 	for _, fragment := range []string{
-		`href="/flight-controller">Автопилот`,
-		`fetch('/api/flight-controller/status'`,
-		`fetch('/api/flight-controller/config'`,
+		`href="/telemetry">Телеметрия`,
+		`fetch('/api/telemetry/status'`,
+		`fetch('/api/telemetry/config'`,
+		`<h1>Телеметрия · MAVLink</h1>`,
 		`id="fc-config-form"`,
+		`formDirty`,
+		`id="telemetry"`,
 		`mavlink.json`,
 		`app-shell`,
 		`src="/assets/application-status.js" defer`,
@@ -39,13 +42,13 @@ func TestFlightControllerHTTPHandlers(t *testing.T) {
 	}
 
 	configResponse := httptest.NewRecorder()
-	flightControllerConfigHandler(service).ServeHTTP(configResponse, httptest.NewRequest(http.MethodGet, "/api/flight-controller/config", nil))
+	flightControllerConfigHandler(service).ServeHTTP(configResponse, httptest.NewRequest(http.MethodGet, "/api/telemetry/config", nil))
 	if configResponse.Code != http.StatusOK {
 		t.Fatalf("GET config status = %d, want 200", configResponse.Code)
 	}
 
 	statusResponse := httptest.NewRecorder()
-	flightControllerStatusHandler(service).ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/flight-controller/status", nil))
+	flightControllerStatusHandler(service).ServeHTTP(statusResponse, httptest.NewRequest(http.MethodGet, "/api/telemetry/status", nil))
 	if statusResponse.Code != http.StatusOK {
 		t.Fatalf("GET status status = %d, want 200", statusResponse.Code)
 	}
@@ -62,7 +65,7 @@ func TestFlightControllerHTTPHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updateRequest := httptest.NewRequest(http.MethodPut, "/api/flight-controller/config", bytes.NewReader(body))
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/telemetry/config", bytes.NewReader(body))
 	updateRequest.Header.Set("Content-Type", "application/json")
 	updateResponse := httptest.NewRecorder()
 	flightControllerConfigHandler(service).ServeHTTP(updateResponse, updateRequest)
@@ -90,7 +93,7 @@ func TestFlightControllerConfigHandlerRejectsInvalidTransport(t *testing.T) {
 	}
 
 	body := []byte(`{"enabled":true,"transport":"serial","udpAddr":"0.0.0.0:14550","outSystemId":255,"linkTimeout":"5s","messageInterval":"500ms"}`)
-	request := httptest.NewRequest(http.MethodPut, "/api/flight-controller/config", bytes.NewReader(body))
+	request := httptest.NewRequest(http.MethodPut, "/api/telemetry/config", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	flightControllerConfigHandler(service).ServeHTTP(response, request)

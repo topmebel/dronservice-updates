@@ -103,10 +103,9 @@ notes_file="$workdir/release-notes.md"
 cat > "$notes_file" <<EOF
 ## DronService ${version}
 
-- Исправлено обновление на хостах без пользователя admin (например rovertech).
-- Локальные настройки (порт, HLS URL, пользователь systemd) сохраняются в dronservice.env и drop-in.
-- Health-check updater учитывает DRONSERVICE_ADDR; в UI показывается текст ошибки обновления.
-- Исправлен sandbox updater: запись в /usr/local/libexec и systemd units.
+- Страница телеметрии MAVLink: пункт меню «Телеметрия», URL /telemetry.
+- Форма настроек больше не сбрасывается при автообновлении карточек.
+- Старые пути /flight-controller сохранены как совместимость.
 EOF
 
 "$gh_cmd" release create "$version" \

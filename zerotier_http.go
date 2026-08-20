@@ -99,7 +99,7 @@ const zeroTierPageHTML = `<!doctype html>
 <body>
 <div class="app-shell">
 <aside class="app-sidebar">
-  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/flight-controller">Автопилот</a><a class="active" href="/zerotier">ZeroTier</a></nav>
+  <nav class="main-nav"><span class="brand">DronService · <small id="app-version">…</small></span><span id="internet-status">Интернет: проверка…</span><a href="/devices">Аналог. камеры</a><a href="/ip-cameras">IP-камеры</a><a href="/streams">MediaMTX</a><a href="/starlink">Starlink</a><a href="/telemetry">Телеметрия</a><a class="active" href="/zerotier">ZeroTier</a></nav>
   <div id="network-info"><div id="network-addresses">Сеть: получение адресов…</div><button id="update-app" type="button" hidden style="padding:5px 9px">Обновить</button><span id="update-app-state"></span></div>
 </aside>
 <main class="app-main">

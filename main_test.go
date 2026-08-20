@@ -390,12 +390,12 @@ func TestValidPublicStreamNameRejectsInternalPreviewPaths(t *testing.T) {
 
 func TestApplicationPagesShowRaspberryNetworkAddresses(t *testing.T) {
 	pages := map[string]string{
-		"devices":           devicesPageHTML,
-		"ip-cameras":        ipCamerasPageHTML,
-		"streams":           streamsPageHTML,
-		"starlink":          starlinkPageHTML,
-		"flight-controller": flightControllerPageHTML,
-		"zerotier":          zeroTierPageHTML,
+		"devices":    devicesPageHTML,
+		"ip-cameras": ipCamerasPageHTML,
+		"streams":    streamsPageHTML,
+		"starlink":   starlinkPageHTML,
+		"telemetry":  flightControllerPageHTML,
+		"zerotier":   zeroTierPageHTML,
 	}
 	for name, page := range pages {
 		t.Run(name, func(t *testing.T) {
@@ -423,12 +423,12 @@ func TestApplicationPagesShowRaspberryNetworkAddresses(t *testing.T) {
 
 func TestApplicationPagesShowVersionAndManualUpdateButton(t *testing.T) {
 	pages := map[string]string{
-		"devices":           devicesPageHTML,
-		"ip-cameras":        ipCamerasPageHTML,
-		"streams":           streamsPageHTML,
-		"starlink":          starlinkPageHTML,
-		"flight-controller": flightControllerPageHTML,
-		"zerotier":          zeroTierPageHTML,
+		"devices":    devicesPageHTML,
+		"ip-cameras": ipCamerasPageHTML,
+		"streams":    streamsPageHTML,
+		"starlink":   starlinkPageHTML,
+		"telemetry":  flightControllerPageHTML,
+		"zerotier":   zeroTierPageHTML,
 	}
 	for name, page := range pages {
 		t.Run(name, func(t *testing.T) {
